@@ -1,0 +1,16 @@
+stateDiagram-v2
+  [*] --> PENDING_APPROVAL: created, amount at or above threshold or decision flagged
+  [*] --> QUEUED: created, amount below threshold, authorisation journal posted
+  PENDING_APPROVAL --> QUEUED: different senior moderator approves, authorisation journal posted
+  PENDING_APPROVAL --> CANCELLED: senior moderator declines, dispute opened or reopened
+  QUEUED --> SUBMITTED: worker submits with stored idempotency key, guard re-checked
+  QUEUED --> CANCELLED: senior moderator cancels before submission
+  SUBMITTED --> SUCCEEDED: provider success verified by status query
+  SUBMITTED --> FAILED: provider explicit failure
+  SUBMITTED --> UNKNOWN: timeout or ambiguous result, PROVIDER_UNKNOWN freeze added
+  UNKNOWN --> FAILED: exception resolved CONFIRM_NOT_EXECUTED after reconciliation
+  UNKNOWN --> SUCCEEDED: definitive success
+  UNKNOWN --> FAILED: definitive failure
+  FAILED --> [*]: F10 reverses authorisation and reservation, then retries as a linked instruction or releases
+  SUCCEEDED --> [*]
+  CANCELLED --> [*]

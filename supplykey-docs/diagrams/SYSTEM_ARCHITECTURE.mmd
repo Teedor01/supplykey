@@ -1,0 +1,52 @@
+flowchart TB
+  subgraph Clients
+    WEB["Public web app: buyer and supplier, mobile first"]
+    DASH["Moderator and admin dashboard"]
+  end
+  subgraph Backend["Backend: modular monolith"]
+    API["REST API layer: authN, validation, rate limits, idempotency"]
+    AUTHZ["Auth and RBAC"]
+    TXE["Transaction engine: state machines and deadlines"]
+    AGR["Agreement module"]
+    EVD["Evidence module"]
+    DSP["Dispute and moderation module"]
+    FIN["Financial module: ledger, allocations, payouts, refunds"]
+    PAY["Payment Adapter interface"]
+    NOT["Notification module"]
+    AUD["Audit module"]
+    WH["Webhook receiver"]
+  end
+  subgraph Worker["Background worker: same codebase"]
+    SCH["Deadline scanner and window closer"]
+    OUT["Outbox dispatcher"]
+    REC["Reconciliation job"]
+  end
+  DB[("PostgreSQL")]
+  OBJ[("Object storage: private evidence bucket")]
+  SIM["SimulatedPaymentProvider: development and demo"]
+  PROV["Real provider adapter: blocked until written provider and legal approval"]
+  WEB --> API
+  DASH --> API
+  API --> AUTHZ
+  API --> TXE
+  TXE --> AGR
+  TXE --> EVD
+  TXE --> DSP
+  TXE --> FIN
+  FIN --> PAY
+  PAY --> SIM
+  PAY -.-> PROV
+  PROV -.-> WH
+  SIM --> WH
+  WH --> FIN
+  TXE --> AUD
+  FIN --> AUD
+  DSP --> AUD
+  TXE --> NOT
+  EVD --> OBJ
+  Backend --> DB
+  Worker --> DB
+  SCH --> TXE
+  REC --> PAY
+  OUT --> NOT
+  OUT --> FIN

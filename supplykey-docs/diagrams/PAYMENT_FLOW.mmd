@@ -1,0 +1,27 @@
+sequenceDiagram
+  participant B as Buyer UI
+  participant API as Backend API
+  participant FIN as Financial module
+  participant AD as Payment Adapter
+  participant P as Provider or Simulator
+  participant W as Worker
+  B->>API: POST /transactions/{id}/payments with Idempotency-Key
+  API->>FIN: create payment and attempt, status PENDING
+  FIN->>AD: createCollection with attempt id as merchant reference
+  AD->>P: collection request
+  P-->>AD: checkout info
+  API-->>B: payment PENDING and checkout details
+  P-->>API: webhook to /webhooks/payments/provider
+  API->>API: verify signature, store raw event, dedupe by event id
+  API->>AD: getCollectionStatus and getHoldStatus
+  AD->>P: status queries
+  P-->>AD: payment received and funds secured
+  alt funds secured and amount, currency, reference match
+    API->>FIN: TX: PAYMENT_RECEIVED journal, then payment FUNDS_SECURED with FUNDS_SECURED journal, lots AWAITING_DISPATCH, transaction FUNDED, dispatch_deadline_at = funded_at + 72h, audit, outbox
+    API-->>B: transaction FUNDED on next poll
+  else payment received but funds not confirmed secured
+    API->>FIN: payment PAYMENT_RECEIVED with its journal, transaction stays AWAITING_PAYMENT, exception PAYMENT_NOT_SECURED opened
+  else timeout or ambiguous
+    API->>FIN: payment UNKNOWN, no funding, resolver scheduled
+    W->>AD: poll status with backoff
+  end

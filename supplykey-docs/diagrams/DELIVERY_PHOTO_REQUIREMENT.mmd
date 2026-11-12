@@ -1,0 +1,7 @@
+stateDiagram-v2
+  [*] --> PENDING: created, supplier at dispatch and buyer at receipt confirmation
+  PENDING --> SUBMITTED: delivery photographs linked before due date
+  PENDING --> OVERDUE: due date passed, nothing is decided automatically
+  OVERDUE --> SUBMITTED_LATE: photographs linked after due date
+  SUBMITTED --> [*]
+  SUBMITTED_LATE --> [*]

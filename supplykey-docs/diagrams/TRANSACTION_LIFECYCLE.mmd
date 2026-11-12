@@ -1,0 +1,30 @@
+stateDiagram-v2
+  direction TB
+  [*] --> AWAITING_DISPATCH: payment FUNDS_SECURED verified by backend
+  AWAITING_DISPATCH --> DISPATCHED: supplier dispatch declaration with evidence before 72h deadline
+  AWAITING_DISPATCH --> IN_DISPUTE: 72h dispatch deadline elapsed for outstanding quantity
+  DISPATCHED --> RECEIPT_CONFIRMED: buyer confirms physical receipt of quantity
+  DISPATCHED --> IN_DISPUTE: dispute opened by party or moderator
+  RECEIPT_CONFIRMED --> SUBMITTED_FOR_REVIEW: buyer submits acceptance with proof
+  RECEIPT_CONFIRMED --> REJECTED_AWAITING_RETURN: buyer rejects citing agreed conditions
+  RECEIPT_CONFIRMED --> IN_DISPUTE: inspection period expired or dispute opened
+  SUBMITTED_FOR_REVIEW --> ACCEPTED_CONFIRMED: moderator confirms after evidence window closed or waived
+  SUBMITTED_FOR_REVIEW --> IN_DISPUTE: moderator or party opens dispute
+  ACCEPTED_CONFIRMED --> SETTLED_RELEASED: provider confirmed supplier payout
+  REJECTED_AWAITING_RETURN --> RETURN_HANDOVER_RECORDED: buyer handover evidence validated, 72h timer starts
+  REJECTED_AWAITING_RETURN --> IN_DISPUTE: handover deadline expired or dispute opened
+  RETURN_HANDOVER_RECORDED --> RETURN_RECEIPT_CONFIRMED: supplier confirms receipt of quantity
+  RETURN_HANDOVER_RECORDED --> IN_DISPUTE: supplier contests or 72h elapsed
+  RETURN_RECEIPT_CONFIRMED --> SETTLED_REFUNDED: provider confirmed buyer refund
+  IN_DISPUTE --> ACCEPTED_CONFIRMED: decision RELEASE, authorised payout instruction, dispute freeze persists until success
+  ACCEPTED_CONFIRMED --> IN_DISPUTE: payout approval declined
+  RETURN_RECEIPT_CONFIRMED --> IN_DISPUTE: refund approval declined
+  IN_DISPUTE --> SETTLED_REFUNDED: decision REFUND executed and provider confirmed
+  IN_DISPUTE --> AWAITING_DISPATCH: decision REDISPATCH_OR_REPLACEMENT with new dispatch deadline
+  note right of IN_DISPUTE
+    NO_FINANCIAL_ACTION restores the saved pre-dispute status.
+    REFUND stays IN_DISPUTE and frozen with money REFUND_PENDING until provider success.
+    A frozen lot accepts only the instruction authorised by its own dispute decision.
+  end note
+  SETTLED_RELEASED --> [*]
+  SETTLED_REFUNDED --> [*]

@@ -1,0 +1,24 @@
+erDiagram
+  users ||--o{ transactions : supplies_or_buys
+  transactions ||--|{ transaction_items : has
+  transactions ||--|{ agreement_versions : versions
+  agreement_versions ||--|{ agreed_conditions : lists
+  transaction_items ||--|{ item_quantity_lots : split_into
+  item_quantity_lots ||--|| item_quantity_allocations : priced_by
+  item_quantity_lots ||--o{ lot_freezes : frozen_by
+  transaction_items ||--o{ item_quantity_decisions : decided_by
+  transactions ||--o{ dispatch_declarations : dispatched_by
+  transactions ||--o{ delivery_photo_requirements : requires
+  transactions ||--o{ returns : returned_in
+  returns ||--|{ return_items : covers
+  transactions ||--o{ disputes : has
+  disputes ||--o{ dispute_items : scopes
+  transactions ||--o{ evidence_files : holds
+  transactions ||--o{ payments : paid_by
+  payments ||--o{ payment_attempts : tries
+  transactions ||--o{ ledger_entries : records
+  transactions ||--o{ payouts : pays_out
+  transactions ||--o{ refunds : refunds
+  payouts ||--o{ instruction_approvals : approved_by
+  refunds ||--o{ instruction_approvals : approved_by
+  moderator_decisions ||--|{ decision_outcomes : decides

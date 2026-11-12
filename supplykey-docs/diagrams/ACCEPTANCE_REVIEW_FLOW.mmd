@@ -1,0 +1,20 @@
+flowchart TD
+  A["Buyer submits acceptance quantity with proof and delivery photographs"] --> A2{"Buyer delivery photos SUBMITTED?"}
+  A2 -- "No" --> A3["Refused: DELIVERY_PHOTOS_REQUIRED"]
+  A2 -- "Yes" --> B["Decision SUBMITTED_FOR_REVIEW, lots SUBMITTED_FOR_REVIEW, funds HELD"]
+  B --> C["Both parties notified, evidence window OPEN"]
+  C --> D{"Window closed or both waived?"}
+  D -- "No" --> C
+  D -- "Yes" --> S{"Supplier delivery photos"}
+  S -- "PENDING" --> S1["Confirm refused: SUPPLIER_DELIVERY_PHOTOS_PENDING"]
+  S -- "OVERDUE" --> S2["Confirm allowed only with recorded acknowledgement"]
+  S -- "SUBMITTED or SUBMITTED_LATE" --> E["Moderator reviews agreement, buyer proof, supplier evidence, timeline"]
+  S2 --> E
+  E --> F{"Outcome"}
+  F -- "Confirm with reason and evidence ids" --> G["Decision CONFIRMED, lots ACCEPTED_CONFIRMED, one payout instruction with amount equal to allocation"]
+  G --> P{"Amount at or above threshold?"}
+  P -- "Yes" --> P1["Instruction PENDING_APPROVAL, different senior moderator approves, then QUEUED"]
+  P -- "No" --> P2["Instruction QUEUED"]
+  F -- "Request evidence" --> H["Decision EVIDENCE_REQUESTED, decision blocked until due date or response"]
+  H --> E
+  F -- "Open dispute" --> I["Decision DISPUTED, lots IN_DISPUTE"]

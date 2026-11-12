@@ -1,0 +1,13 @@
+stateDiagram-v2
+  [*] --> EVIDENCE_WINDOW_OPEN: dispute opened, both parties notified
+  EVIDENCE_WINDOW_OPEN --> MODERATOR_REVIEW: window elapsed or both parties waive
+  MODERATOR_REVIEW --> AWAITING_EVIDENCE: moderator requests evidence with due date
+  AWAITING_EVIDENCE --> MODERATOR_REVIEW: evidence received or due date passed
+  MODERATOR_REVIEW --> ON_HOLD: moderator holds with reason
+  ON_HOLD --> MODERATOR_REVIEW: moderator resumes
+  MODERATOR_REVIEW --> AWAITING_SECOND_APPROVAL: decision recorded, instruction PENDING_APPROVAL
+  MODERATOR_REVIEW --> DECIDED: decision recorded, instruction QUEUED or none
+  AWAITING_SECOND_APPROVAL --> DECIDED: different senior moderator approves instruction
+  AWAITING_SECOND_APPROVAL --> MODERATOR_REVIEW: instruction declined, new decision needed
+  DECIDED --> CLOSED: all authorised instructions SUCCEEDED and dispute freezes released
+  CLOSED --> [*]
