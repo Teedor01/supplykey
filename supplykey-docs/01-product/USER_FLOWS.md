@@ -1,8 +1,5 @@
 # User Flows
 
-| Version | Status | Last updated |
-|---|---|---|
-| 0.3.1 | Corrected review, for team sign-off | 2026-11-12 |
 
 Step-by-step journeys for buyer, supplier and moderator, with the screens each flow needs and the status shown at each step. Status names are the canonical enums in [Transaction State Machine](../03-technical-specs/TRANSACTION_STATE_MACHINE.md#2-canonical-enums).
 

@@ -1,8 +1,5 @@
 # System Architecture
 
-| Version | Status | Last updated |
-|---|---|---|
-| 0.3.1 | Corrected review, for team sign-off | 2026-11-12 |
 
 The MVP architecture, how components communicate, and which component is responsible for each decision. Internal module detail is in [Component Design](COMPONENT_DESIGN.md); security controls are in [Security Architecture](SECURITY_ARCHITECTURE.md).
 

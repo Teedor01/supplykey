@@ -1,8 +1,5 @@
 # Dispute and Moderation
 
-| Version | Status | Last updated |
-|---|---|---|
-| 0.3.1 | Corrected review, for team sign-off | 2026-11-12 |
 
 How acceptance reviews and disputes are run: notices, evidence windows, moderator powers and limits, decisions, approvals and audit. Statuses are in the [State Machine](../03-technical-specs/TRANSACTION_STATE_MACHINE.md#2-canonical-enums); endpoints in [API 8 and 11](../03-technical-specs/API_SPECIFICATION.md).
 
@@ -128,7 +125,7 @@ A senior moderator who declines (`/decline`, with a reason) cancels the instruct
 
 ## 8. Service levels
 
-Median decision time and moderator staffing are not defined by v0.2 (target in [Product Requirements 7](../01-product/PRODUCT_REQUIREMENTS.md#7-success-criteria-proposed-targets) is PROPOSED). Staffing and SLA are OPEN ([OD-13](../06-delivery/OPEN_DECISIONS.md)). Holds raise reminders every 48 hours (PROPOSED).
+Median decision time and moderator staffing are not yet confirmed. The target in [Product Requirements 7](../01-product/PRODUCT_REQUIREMENTS.md#7-success-criteria-proposed-targets) is PROPOSED. Staffing and SLA are OPEN ([OD-13](../06-delivery/OPEN_DECISIONS.md)). Holds raise reminders every 48 hours (PROPOSED).
 
 ## 9. Related documents
 

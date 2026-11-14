@@ -1,14 +1,11 @@
 # Business Rules
 
-| Version | Status | Last updated |
-|---|---|---|
-| 0.3.1 | Corrected review, for team sign-off | 2026-11-12 |
 
 The single list of locked product rules, configurable deadlines, calculation rules and known tensions. Other documents reference these rule IDs instead of restating them.
 
 ## 1. Locked rules (CONFIRMED)
 
-These are binding. They come from the original brief and are restated as rule IDs in v0.2.
+These rules are binding. Each has a stable rule ID so the other specifications can reference it without redefining it.
 
 | ID | Rule | Implemented in |
 |---|---|---|

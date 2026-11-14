@@ -1,10 +1,7 @@
 # Acceptance Criteria
 
-| Version | Status | Last updated |
-|---|---|---|
-| 0.3.1 | Corrected review, for team sign-off | 2026-11-12 |
 
-The mandatory conditions before implementation is considered complete. These are the v0.2 section 12 tests in Given/When/Then form, with traceability to rules, requirements and tests.
+The mandatory conditions for considering implementation complete. Each criterion uses Given/When/Then form and traces to the relevant rules, requirements and tests.
 
 ## 1. Mandatory acceptance criteria
 

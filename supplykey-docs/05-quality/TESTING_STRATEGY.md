@@ -1,8 +1,5 @@
 # Testing Strategy
 
-| Version | Status | Last updated |
-|---|---|---|
-| 0.3.1 | Corrected review, for team sign-off | 2026-11-12 |
 
 How we prove financial correctness and state integrity. Test IDs map to the [Acceptance Criteria](ACCEPTANCE_CRITERIA.md). Priority is financial correctness first, then state integrity, then authorisation, then experience.
 

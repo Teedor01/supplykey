@@ -1,10 +1,7 @@
 # Implementation Plan
 
-| Version | Status | Last updated |
-|---|---|---|
-| 0.3.1 | Corrected review, for team sign-off | 2026-11-12 |
 
-A phased plan the team can execute, with deliverables, tasks, owners, dependencies, acceptance and testing per phase. Phases follow v0.2 section 9. Durations are RECOMMENDED estimates for a three-person team, not commitments. Owners are defined in [Team Responsibilities](TEAM_RESPONSIBILITIES.md).
+A phased plan the team can execute, with deliverables, tasks, owners, dependencies, acceptance and testing per phase. Durations are RECOMMENDED estimates for a three-person team, not commitments. Owners are defined in [Team Responsibilities](TEAM_RESPONSIBILITIES.md).
 
 ## 1. Principles
 
@@ -54,7 +51,7 @@ BE = Backend Engineer, FE = Frontend Engineer, UX = UI/UX Designer.
 
 ## 5. Shared contracts that must be agreed before coding (Phase 0 gate)
 
-See [Team Responsibilities 3](TEAM_RESPONSIBILITIES.md#3-contracts-frozen-in-phase-0). Backend updates the database specification, OpenAPI contract and state-machine enums together; frontend builds against the OpenAPI and mock server, not against any older example.
+See [Team Responsibilities 3](TEAM_RESPONSIBILITIES.md#3-contracts-frozen-in-phase-0). Backend updates the database specification, OpenAPI contract and state-machine enums together; frontend builds against the agreed OpenAPI contract and mock server.
 
 ## 6. Risks
 

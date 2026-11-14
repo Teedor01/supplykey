@@ -1,8 +1,5 @@
 # Payment Provider Integration
 
-| Version | Status | Last updated |
-|---|---|---|
-| 0.3.1 | Corrected review, for team sign-off | 2026-11-12 |
 
 What we know and do not know about the payment provider, the simulator used for all development, the adapter requirements, and the gates that block real-money launch. This document does not claim that Paga supports escrow or conditional custody.
 

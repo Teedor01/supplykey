@@ -1,8 +1,5 @@
 # Team Responsibilities
 
-| Version | Status | Last updated |
-|---|---|---|
-| 0.3.1 | Corrected review, for team sign-off | 2026-11-12 |
 
 Who owns what, which contracts must be frozen before coding, and the working agreements that keep the blueprint consistent.
 

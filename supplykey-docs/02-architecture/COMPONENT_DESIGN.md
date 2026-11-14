@@ -1,8 +1,5 @@
 # Component Design
 
-| Version | Status | Last updated |
-|---|---|---|
-| 0.3.1 | Corrected review, for team sign-off | 2026-11-12 |
 
 Internal design of the backend modules, the transition pattern, background jobs and the payment adapter contract. Entities are in [Database](../03-technical-specs/DATABASE_SPECIFICATION.md); transitions in the [State Machine](../03-technical-specs/TRANSACTION_STATE_MACHINE.md).
 

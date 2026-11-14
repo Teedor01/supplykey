@@ -1,8 +1,5 @@
 # Evidence and File Handling
 
-| Version | Status | Last updated |
-|---|---|---|
-| 0.3.1 | Corrected review, for team sign-off | 2026-11-12 |
 
 What counts as evidence, how files are uploaded, validated, linked, flagged and viewed, and the separate delivery-photograph workflows for buyer and supplier. Evidence is traceable to transaction, item, party and event.
 

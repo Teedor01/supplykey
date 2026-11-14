@@ -1,8 +1,5 @@
 # Transaction State Machine
 
-| Version | Status | Last updated |
-|---|---|---|
-| 0.3.1 | Corrected review, for team sign-off | 2026-11-12 |
 
 The single definition of every status name and every legal transition. Database, API, frontend types, diagrams and tests all use the enums in section 2 exactly. Several related state machines are used instead of one giant status field.
 
@@ -124,11 +121,11 @@ The dispute freeze persists while the authorised instruction is `PENDING_APPROVA
 
 `EVIDENCE_WINDOW_OPEN`, `MODERATOR_REVIEW`, `AWAITING_EVIDENCE`, `ON_HOLD`, `AWAITING_SECOND_APPROVAL`, `DECIDED`, `CLOSED`.
 
-`MODERATOR_REVIEW` (evidence window closed, a moderator is assessing the case) is used only for disputes. It replaces the v0.1 name `UNDER_REVIEW`, which v0.2 warns against mixing with item and decision statuses.
+`MODERATOR_REVIEW` means the evidence window is closed and a moderator is assessing the case. This status is used only for disputes; item review and decision review use their own statuses.
 
 `disputes.reason_code`: `NO_DISPATCH`, `RETURN_NOT_CONFIRMED`, `RETURN_CONTESTED`, `ACCEPTANCE_DISAGREEMENT`, `SPEC_DISAGREEMENT`, `DELIVERY_DISAGREEMENT`, `SUSPICIOUS_EVIDENCE`, `INSPECTION_PERIOD_EXPIRED` (PROPOSED), `RETURN_HANDOVER_OVERDUE` (PROPOSED), `OTHER`.
 `disputes.origin`: `AUTO`, `BUYER`, `SUPPLIER`, `MODERATOR`.
-Decision outcomes (per lot and quantity): `RELEASE`, `REFUND`, `REDISPATCH_OR_REPLACEMENT`, `NO_FINANCIAL_ACTION`. The v0.2 "split allocation" outcome is expressed as a decision with both `RELEASE` and `REFUND` lines over different quantities of the same item; there is no separate `SPLIT` value and no amount-level split ([OD-14](../06-delivery/OPEN_DECISIONS.md)).
+Decision outcomes (per lot and quantity): `RELEASE`, `REFUND`, `REDISPATCH_OR_REPLACEMENT`, `NO_FINANCIAL_ACTION`. Partial settlement is expressed as a decision with `RELEASE` and `REFUND` lines over different quantities of the same item. There is no separate `SPLIT` outcome or amount-level split ([OD-14](../06-delivery/OPEN_DECISIONS.md)).
 
 ### 2.9 Payout and refund (`payouts.status`, `refunds.status`)
 
@@ -243,10 +240,10 @@ A lot is a quantity of a line item. When an action covers part of a lot the back
 | L18 | `IN_DISPUTE` | Decision `REFUND` for the lot | Moderator records; system executes | Same as L17 | stays `IN_DISPUTE`, money `REFUND_PENDING`, then `SETTLED_REFUNDED` | Refund instruction created through the authorised exception; dispute freeze stays until refund `SUCCEEDED`, so no unrelated instruction can touch the lot. See gap note below | Notify both | `LOT_FROZEN` as above |
 | L19 | `IN_DISPUTE` | Decision `NO_FINANCIAL_ACTION` | System | Decision recorded after window | `pre_dispute_status` restored | Dispute freeze released; no instruction | Notify both | |
 | L20 | `IN_DISPUTE` | Decision `REDISPATCH_OR_REPLACEMENT` | System | Both parties' consent statements recorded ([OD-10](../06-delivery/OPEN_DECISIONS.md)) | `AWAITING_DISPATCH` | New `dispatch_deadline_at` set by the decision; unfreeze | Notify both | |
-| L21 | `IN_DISPUTE` | Mixed decision (v0.2 "split allocation") | System | Lines for different quantities of one item: some `RELEASE`, some `REFUND`; lot split into sub-lots first; every line equals a whole sub-lot | per sub-lot | Sub-lots inherit the dispute freeze; each follows L17 or L18 with its own instruction | Notify both | Amount-level split of one unit is not supported ([OD-14](../06-delivery/OPEN_DECISIONS.md)); `AMOUNT_MUST_MATCH_ALLOCATION` |
+| L21 | `IN_DISPUTE` | Mixed decision with partial release and refund | System | Lines for different quantities of one item: some `RELEASE`, some `REFUND`; lot split into sub-lots first; every line equals a whole sub-lot | per sub-lot | Sub-lots inherit the dispute freeze; each follows L17 or L18 with its own instruction | Notify both | Amount-level split of one unit is not supported ([OD-14](../06-delivery/OPEN_DECISIONS.md)); `AMOUNT_MUST_MATCH_ALLOCATION` |
 | L22 | `ACCEPTED_CONFIRMED`, `RETURN_RECEIPT_CONFIRMED`, `IN_DISPUTE` | Approval of the lot's instruction declined | Senior moderator | Instruction `PENDING_APPROVAL`; reason recorded | `IN_DISPUTE` (for a dispute-origin instruction the lot never left it) | Instruction `CANCELLED`; money back to `HELD`; no ledger entry was posted; a dispute opens (`ACCEPTANCE_DISAGREEMENT` for a payout, `OTHER` for a return refund) or the origin dispute returns to `MODERATOR_REVIEW` | Notify both | A new decision supersedes the declined one |
 
-*Gap note (flagged, not decided).* The v0.2 lot enum has no explicit "refund authorised" status. For a dispute `REFUND` the lot therefore stays `IN_DISPUTE` with `money_status = REFUND_PENDING` and its dispute freeze until the provider confirms, then becomes `SETTLED_REFUNDED`. If the team prefers an extra enum value this must be approved and changed in every document together.
+*Gap note (flagged, not decided).* The item status enum has no separate `REFUND_AUTHORISED` value. For a dispute `REFUND` the lot therefore stays `IN_DISPUTE` with `money_status = REFUND_PENDING` and its dispute freeze until the provider confirms, then becomes `SETTLED_REFUNDED`. If the team prefers an extra enum value this must be approved and changed in every document together.
 
 Every lot transition re-checks: `released + refunded + pending_payout + pending_refund <= allocated`, and that no instruction is created against a frozen lot except through the authorised exception in section 2.4.
 
@@ -362,7 +359,7 @@ Example: a lot frozen by dispute D1 with an approved `REFUND` instruction cannot
 
 ### 4.9 Delivery-photograph requirements (DP)
 
-Proposed operating rules, confirmed as a requirement that both parties submit delivery photographs (v0.2 section 1), with deadlines and consequences PROPOSED ([OD-16](../06-delivery/OPEN_DECISIONS.md)). Photographs are evidence only: no transition below changes any lot status, and nothing here establishes physical receipt.
+Both parties are required to submit delivery photographs. The deadlines and consequences below remain PROPOSED ([OD-16](../06-delivery/OPEN_DECISIONS.md)). Photographs are evidence only: no transition below changes any lot status, and nothing here establishes physical receipt.
 
 ```mermaid
 stateDiagram-v2

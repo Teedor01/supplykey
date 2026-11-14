@@ -1,8 +1,5 @@
 # Notifications and Deadlines
 
-| Version | Status | Last updated |
-|---|---|---|
-| 0.3.1 | Corrected review, for team sign-off | 2026-11-12 |
 
 Every deadline the system enforces, who is told what and when, and the rules for displaying countdowns. Deadline values and statuses come from [Business Rules 2](../01-product/BUSINESS_RULES.md#2-deadlines-and-configuration) and the [State Machine](../03-technical-specs/TRANSACTION_STATE_MACHINE.md).
 

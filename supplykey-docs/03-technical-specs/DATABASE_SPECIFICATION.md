@@ -1,10 +1,7 @@
 # Database Specification
 
-| Version | Status | Last updated |
-|---|---|---|
-| 0.3.1 | Corrected review, for team sign-off | 2026-11-12 |
 
-PostgreSQL schema for SupplyKey: tables, fields, keys, constraints, indexes and invariants, including the quantity-level model required by v0.2. Status values come only from the [canonical enums](TRANSACTION_STATE_MACHINE.md#2-canonical-enums).
+PostgreSQL schema for SupplyKey: tables, fields, keys, constraints, indexes and invariants, including the quantity-level model used for partial dispatch, acceptance, returns and settlement. Status values come only from the [canonical enums](TRANSACTION_STATE_MACHINE.md#2-canonical-enums).
 
 ## 1. Conventions
 
@@ -130,7 +127,7 @@ One row per distinct product, variant or price line. Not one row per physical un
 
 ## 5. Quantity model
 
-Requirement (v0.2 §4, SK-16): partial acceptance, dispatch, returns and refunds work at item-quantity level without creating a row per physical unit.
+Partial acceptance, dispatch, returns and refunds operate at item-quantity level without creating a row for every physical unit (SK-16).
 
 *RECOMMENDED design: quantity lots.* A *lot* is a contiguous range of unit numbers of one line item that currently share the same status and money position. At funding, each line item gets one lot covering units `1..quantity`. When an action covers part of a lot, the backend splits the lot into two lots (for example units 1-3 and 4-5) and moves only the relevant lot. A 5-phone line is at most a handful of rows, never five-per-unit by default.
 
@@ -176,7 +173,7 @@ One row per active or past freeze of a lot. A lot can have several at once (for 
 
 ### `item_quantity_allocations`
 
-One row per lot (`lot_id` UNIQUE). This is the v0.2 `item_quantity_allocations` entity, keyed by lot.
+One row per lot (`lot_id` UNIQUE). This allocation record is keyed by lot.
 
 | Field | Type | Notes |
 |---|---|---|
@@ -305,7 +302,7 @@ Partial unique indexes (prevent duplicate automatic disputes):
 ### `moderator_decisions` (immutable) and `decision_outcomes`
 
 `moderator_decisions`: `id`; `decision_kind` (`ACCEPTANCE_CONFIRMATION`, `DISPUTE_DECISION`); `subject_type`/`subject_id`; `moderator_id`; `reason` text NOT NULL; `evidence_ids_considered` uuid[]; `requires_second_approval` boolean; `supersedes_id`; `created_at`. A changed mind is a new decision that supersedes; the old one is never edited.
-`decision_outcomes`: `decision_id`, `item_id`, `lot_id`, `quantity`, `outcome` (`RELEASE`, `REFUND`, `REDISPATCH_OR_REPLACEMENT`, `NO_FINANCIAL_ACTION`), `amount_kobo`, `new_dispatch_deadline_at` (required for `REDISPATCH_OR_REPLACEMENT`). There is no `SPLIT` value: a v0.2 "split allocation" is a decision with `RELEASE` and `REFUND` rows over different sub-lots.
+`decision_outcomes`: `decision_id`, `item_id`, `lot_id`, `quantity`, `outcome` (`RELEASE`, `REFUND`, `REDISPATCH_OR_REPLACEMENT`, `NO_FINANCIAL_ACTION`), `amount_kobo`, `new_dispatch_deadline_at` (required for `REDISPATCH_OR_REPLACEMENT`). There is no `SPLIT` value. A partial decision uses `RELEASE` and `REFUND` rows over different sub-lots.
 
 *Amount enforcement (OD-14 made enforceable).* Constraints on `decision_outcomes`:
 

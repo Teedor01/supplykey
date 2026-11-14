@@ -1,8 +1,5 @@
 # Product Requirements
 
-| Version | Status | Last updated |
-|---|---|---|
-| 0.3.1 | Corrected review, for team sign-off | 2026-11-12 |
 
 Defines the product vision, users, scope, functional and non-functional requirements and success criteria. Rules are referenced by ID from [Business Rules](BUSINESS_RULES.md); flows are in [User Flows](USER_FLOWS.md).
 

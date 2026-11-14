@@ -1,8 +1,5 @@
 # API Specification
 
-| Version | Status | Last updated |
-|---|---|---|
-| 0.3.1 | Corrected review, for team sign-off | 2026-11-12 |
 
 The REST contract the frontend and backend build against. Statuses and error codes are exactly those in the [State Machine](TRANSACTION_STATE_MACHINE.md#2-canonical-enums). The frontend sends intents and renders `allowed_actions`; it never decides whether money can move.
 
@@ -218,7 +215,7 @@ Response of the evidence call: `{ "requirement": { "id": "dpr_2", "status": "SUB
 | `POST /mod/decisions/{id}/open-dispute` | Convert to a dispute | Moderator | Body `{reason_code, reason}`; review becomes `DISPUTED`; lots `IN_DISPUTE` (A5) |
 | `POST /mod/decisions/{id}/extend-window` | Extend once | Moderator | Body `{reason, extra_hours}`; both notified; `409` if already extended |
 
-The v0.1 endpoint `reject-acceptance` no longer exists; it is replaced by `request-evidence` and `open-dispute`.
+Acceptance review is handled through the moderator confirmation, evidence-request and dispute-opening endpoints defined above.
 
 Confirm response for the 3 accepted phones (₦660,000 is above the ₦500,000 threshold, so the payout waits for a different senior moderator):
 
@@ -321,7 +318,7 @@ Dispute opened automatically for a missed dispatch deadline (what both parties r
 | `POST /mod/disputes/{id}/notes` | Internal note | Moderator | Append-only |
 | `POST /mod/disputes/{id}/hold`, `POST /mod/disputes/{id}/resume` | Keep under review / resume | Moderator | `{reason}` (D5, D6) |
 | `POST /mod/disputes/{id}/extend-window` | Extend once | Moderator | `{reason, extra_hours}` |
-| `POST /mod/disputes/{id}/decision` | Record decision | Moderator, not a party | Window `CLOSED_ELAPSED` or `CLOSED_WAIVED`, no `OPEN` request, per-quantity outcomes, reason and evidence ids (D7). v0.2 lists this path as `/disputes/{id}/decision`; the `/mod` prefix is used so every staff route is under `/mod` |
+| `POST /mod/disputes/{id}/decision` | Record decision | Moderator, not a party | Window `CLOSED_ELAPSED` or `CLOSED_WAIVED`, no `OPEN` request, per-quantity outcomes, reason and evidence ids (D7). All staff routes use the `/mod` prefix. |
 | `POST /mod/payouts/{id}/approve`, `POST /mod/refunds/{id}/approve` | Approve an instruction that is `PENDING_APPROVAL` (any origin, including dispute decisions) | Senior moderator, different from the deciding moderator | `PENDING_APPROVAL` to `QUEUED`; authorisation journal posts (F2, D8); `403 SELF_APPROVAL_NOT_ALLOWED`; `409 INSTRUCTION_NOT_PENDING_APPROVAL` |
 | `POST /mod/payouts/{id}/decline`, `POST /mod/refunds/{id}/decline` | Decline approval | Senior moderator, different from the deciding moderator | Body `{reason}`; instruction `CANCELLED`; a dispute opens or the origin dispute returns to `MODERATOR_REVIEW` (F9, L22, D9) |
 | `POST /mod/evidence/{id}/flag` | Mark suspicious | Moderator | Append-only |
@@ -347,7 +344,7 @@ Response. ₦440,000 is below the ₦500,000 threshold, so the refund is created
 
 The same decision covering all 5 units (`110000000` kobo, above the threshold) returns `"dispute_status": "AWAITING_SECOND_APPROVAL"`, `"requires_second_approval": true` and the refund `PENDING_APPROVAL`; a different senior moderator then calls `POST /mod/refunds/{id}/approve`.
 
-Validation: outcome lines refer to whole lots (split a lot by quantity first); for `RELEASE` and `REFUND` the amount is computed from the lot allocation, and a supplied `amount_kobo` that differs is `422 AMOUNT_MUST_MATCH_ALLOCATION` with `details.expected_amount_kobo` (amount-level settlement is not supported, [OD-14](../06-delivery/OPEN_DECISIONS.md)); `REDISPATCH_OR_REPLACEMENT` and `NO_FINANCIAL_ACTION` carry no amount; reason at least 50 characters; the same lot cannot have both `RELEASE` and `REFUND`; a v0.2 "split allocation" is expressed by `RELEASE` and `REFUND` lines over different quantities (different lots); `REDISPATCH_OR_REPLACEMENT` needs `consent_statement_ids` from both parties and `new_dispatch_deadline_at` ([OD-10](../06-delivery/OPEN_DECISIONS.md)); the moderator is not a party; a lot frozen by another dispute, a provider-unknown or a reconciliation freeze returns `409 LOT_FROZEN`; the evidence window must be closed or waived (`409 EVIDENCE_WINDOW_OPEN`).
+Validation: outcome lines refer to whole lots (split a lot by quantity first); for `RELEASE` and `REFUND` the amount is computed from the lot allocation, and a supplied `amount_kobo` that differs is `422 AMOUNT_MUST_MATCH_ALLOCATION` with `details.expected_amount_kobo` (amount-level settlement is not supported, [OD-14](../06-delivery/OPEN_DECISIONS.md)); `REDISPATCH_OR_REPLACEMENT` and `NO_FINANCIAL_ACTION` carry no amount; reason at least 50 characters; the same lot cannot have both `RELEASE` and `REFUND`; partial settlement is expressed by `RELEASE` and `REFUND` lines over different quantity lots; `REDISPATCH_OR_REPLACEMENT` needs `consent_statement_ids` from both parties and `new_dispatch_deadline_at` ([OD-10](../06-delivery/OPEN_DECISIONS.md)); the moderator is not a party; a lot frozen by another dispute, a provider-unknown or a reconciliation freeze returns `409 LOT_FROZEN`; the evidence window must be closed or waived (`409 EVIDENCE_WINDOW_OPEN`).
 
 ## 12. Evidence uploads
 

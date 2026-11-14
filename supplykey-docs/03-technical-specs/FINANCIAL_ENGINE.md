@@ -1,8 +1,5 @@
 # Financial Engine
 
-| Version | Status | Last updated |
-|---|---|---|
-| 0.3.1 | Corrected review, for team sign-off | 2026-11-12 |
 
 How money is allocated, journalled, released, refunded, retried and reconciled. The backend financial module is the only component that can create payout or refund instructions, and only as a consequence of a state transition defined in the [State Machine](TRANSACTION_STATE_MACHINE.md).
 
