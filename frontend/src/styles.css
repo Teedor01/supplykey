@@ -19,3 +19,7 @@
 .profile-layout{display:grid;grid-template-columns:1fr 1fr;gap:17px;align-items:start}.profile-layout .form-panel>h3{margin-bottom:7px}.profile-layout .form-panel>p{margin-bottom:18px}.payout-status{display:flex;align-items:center;justify-content:space-between;padding:11px 0;border-bottom:1px solid #edf0f3;margin-bottom:10px;font-size:10px;color:#7e8d9b}
 @media(max-width:760px){.profile-layout{grid-template-columns:1fr}}
 .evidence-view{display:inline-block;color:#2867a6;font-size:9px;margin-top:6px;text-decoration:none}.evidence-view:hover{text-decoration:underline}
+.pagination-actions{display:flex;justify-content:center;padding:18px 16px 4px}
+.evidence-considered{margin-top:8px;font-size:12px}
+
+.paga-transfer-details{display:grid;gap:5px;margin-top:10px;padding:11px;background:#fff;border:1px solid #dce7ef;border-radius:7px}.paga-transfer-details strong{font:700 18px Manrope;color:#183b59;letter-spacing:1px}.paga-transfer-details .text-link{justify-self:start;border:0;background:none;padding:2px 0;color:#276a9c;font-size:10px;cursor:pointer}

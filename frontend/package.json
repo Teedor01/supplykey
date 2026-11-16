@@ -7,8 +7,9 @@
     "dev": "vite --host 0.0.0.0",
     "build": "vite build",
     "preview": "vite preview --host 0.0.0.0",
-    "test": "vitest run",
-    "check:contracts": "node scripts/smoke-check.mjs"
+    "test": "node --test scripts/*.test.mjs",
+    "check:contracts": "node scripts/smoke-check.mjs",
+    "test:vitest": "vitest run"
   },
   "dependencies": {
     "react": "18.3.1",
