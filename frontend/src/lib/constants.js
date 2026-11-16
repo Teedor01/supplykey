@@ -1,0 +1,23 @@
+export const TX_STATES = ['DRAFT','AWAITING_BUYER_AGREEMENT','AWAITING_PAYMENT','FUNDED','COMPLETED','CANCELLED','EXPIRED'];
+export const ITEM_STATES = ['AWAITING_DISPATCH','DISPATCHED','RECEIPT_CONFIRMED','SUBMITTED_FOR_REVIEW','ACCEPTED_CONFIRMED','REJECTED_AWAITING_RETURN','RETURN_HANDOVER_RECORDED','RETURN_RECEIPT_CONFIRMED','IN_DISPUTE','SETTLED_RELEASED','SETTLED_REFUNDED'];
+export const PAYMENT_STATES = ['PENDING','PAYMENT_RECEIVED','FUNDS_SECURED','FAILED','EXPIRED','UNKNOWN'];
+export const LOT_MONEY_STATES = ['HELD','RELEASE_PENDING','RELEASED','REFUND_PENDING','REFUNDED'];
+export const INSTRUCTION_STATES = ['PENDING_APPROVAL','QUEUED','SUBMITTED','SUCCEEDED','FAILED','UNKNOWN','CANCELLED'];
+export const REVIEW_STATES = ['SUBMITTED_FOR_REVIEW','EVIDENCE_REQUESTED','CONFIRMED','DISPUTED'];
+export const RETURN_STATES = ['AWAITING_HANDOVER_EVIDENCE','HANDOVER_RECORDED','RECEIPT_CONFIRMED','IN_DISPUTE','CLOSED'];
+export const EVIDENCE_REQUEST_STATES = ['OPEN','FULFILLED','EXPIRED'];
+export const FREEZE_REASONS = ['DISPUTE','PROVIDER_UNKNOWN','RECONCILIATION'];
+export const RETURN_CONTEST_REASONS = ['WRONG_ITEM','DAMAGED','QUANTITY_MISMATCH','NOT_RECEIVED'];
+export const INSTRUCTION_ORIGINS = ['ACCEPTANCE_CONFIRMATION','RETURN_RECEIPT_CONFIRMATION','DISPUTE_DECISION'];
+export const DISPUTE_STATES = ['EVIDENCE_WINDOW_OPEN','MODERATOR_REVIEW','AWAITING_EVIDENCE','ON_HOLD','AWAITING_SECOND_APPROVAL','DECIDED','CLOSED'];
+export const EVIDENCE_STATES = ['UPLOADING','VERIFIED','LINKED','RETIRED'];
+export const EVIDENCE_WINDOW_STATES = ['OPEN','CLOSED_ELAPSED','CLOSED_WAIVED'];
+export const DELIVERY_PHOTO_STATES = ['PENDING','SUBMITTED','OVERDUE','SUBMITTED_LATE'];
+export const ROLES = ['USER','MODERATOR','SENIOR_MODERATOR','ADMIN'];
+export const REASONS = ['NO_DISPATCH','RETURN_NOT_CONFIRMED','RETURN_CONTESTED','ACCEPTANCE_DISAGREEMENT','SPEC_DISAGREEMENT','DELIVERY_DISAGREEMENT','SUSPICIOUS_EVIDENCE','INSPECTION_PERIOD_EXPIRED','RETURN_HANDOVER_OVERDUE','OTHER'];
+export const NG_STATES = ['Abia','Adamawa','Akwa Ibom','Anambra','Bauchi','Bayelsa','Benue','Borno','Cross River','Delta','Ebonyi','Edo','Ekiti','Enugu','FCT','Gombe','Imo','Jigawa','Kaduna','Kano','Katsina','Kebbi','Kogi','Kwara','Lagos','Nasarawa','Niger','Ogun','Ondo','Osun','Oyo','Plateau','Rivers','Sokoto','Taraba','Yobe','Zamfara'];
+export const money = kobo => new Intl.NumberFormat('en-NG',{style:'currency',currency:'NGN',maximumFractionDigits:2}).format((Number(kobo)||0)/100);
+export const titleCase = s => String(s||'').toLowerCase().replaceAll('_',' ').replace(/\b\w/g,c=>c.toUpperCase());
+
+export const dateTime = value => value ? new Intl.DateTimeFormat('en-NG',{dateStyle:'medium',timeStyle:'short',timeZone:'Africa/Lagos'}).format(new Date(value)) : 'Not supplied';
+export const dateOnly = value => value ? new Intl.DateTimeFormat('en-NG',{day:'numeric',month:'short',year:'numeric',timeZone:'Africa/Lagos'}).format(new Date(value)) : 'Not supplied';
