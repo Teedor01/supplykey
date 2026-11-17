@@ -39,6 +39,7 @@ This is the transactional outbox pattern: nothing external is called inside the 
 | `inspection_scanner` | 5 min | `RECEIPT_CONFIRMED` past `inspection_deadline_at` opens review (L15, PROPOSED, enabled only after [OD-01](../06-delivery/OPEN_DECISIONS.md)) | Unique per lot and reason |
 | `handover_overdue_scanner` | 5 min | Rejected quantity without handover past `handover_due_at` (L16, PROPOSED) | Same |
 | `evidence_window_closer` | 5 min | Closes elapsed windows, expires requests, notifies moderators | State check |
+| `moderator_resolution_scanner` | 5 min | Flags disputes more than 72 hours past `moderator_decision_due_at`; writes one audit/escalation event and notifies staff; never decides or moves money | Unique overdue event per dispute |
 | `payment_pending_resolver` | 2 min | Polls provider for `PENDING`, `PAYMENT_RECEIVED`, `UNKNOWN` payments | Status-based |
 | `outbox_dispatcher` | continuous | Submits `QUEUED` instructions, sends notifications, retries with backoff | Instruction idempotency key |
 | `instruction_resolver` | 2 min | Queries `SUBMITTED` and `UNKNOWN` instructions with the original reference | Status-based |
@@ -85,3 +86,8 @@ Rules: any result other than explicit success or explicit failure is UNKNOWN; ra
 ## 6. Related documents
 
 [System Architecture](SYSTEM_ARCHITECTURE.md) · [Notifications and Deadlines](../04-operations/NOTIFICATIONS_AND_DEADLINES.md) · [Payment Provider Integration](../04-operations/PAYMENT_PROVIDER_INTEGRATION.md)
+
+
+## Implementation status note
+
+This document defines the intended product or technical behaviour. It is not, by itself, evidence that the current application implements or has passed tests for every requirement. The current implementation status, verified test results and known defects are recorded in the repository-root `STATUS_REPORT.md`. In particular, the 72-hour moderator-resolution deadline is specified but not yet implemented; the frontend simulator checkout is missing; return/refund defects remain open; and browser/PostgreSQL verification has not been completed.

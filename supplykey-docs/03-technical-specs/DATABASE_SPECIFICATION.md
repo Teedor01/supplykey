@@ -288,7 +288,9 @@ Delivery photographs: `purpose = 'DELIVERY_PHOTO'`, `party_role` is `BUYER` or `
 
 ### `disputes`
 
-`id`; `transaction_id` FK; `return_id` FK nullable; `reason_code` and `origin` per [State Machine 2.8](TRANSACTION_STATE_MACHINE.md#28-dispute-disputesstatus); `status`; `opened_at`; `evidence_window_id` FK; `assigned_moderator_id`; `requires_second_approval` boolean.
+`id`; `transaction_id` FK; `return_id` FK nullable; `reason_code` and `origin` per [State Machine 2.8](TRANSACTION_STATE_MACHINE.md#28-dispute-disputesstatus); `status`; `opened_at`; `evidence_window_id` FK; `assigned_moderator_id`; `moderator_review_started_at` nullable; `moderator_decision_due_at` nullable; `moderator_overdue_at` nullable; `requires_second_approval` boolean.
+
+When a dispute enters `MODERATOR_REVIEW`, set `moderator_review_started_at` once and calculate `moderator_decision_due_at = moderator_review_started_at + 72 hours`. The 72-hour moderator-resolution deadline starts after the evidence process closes; it is separate from the 48-hour evidence window. The worker records `moderator_overdue_at` and creates an audit/escalation event when the deadline passes. It must not create a decision or financial instruction. The deadline fields and worker enforcement are a required schema change, but they are not implemented in the current runtime schema.
 
 Partial unique indexes (prevent duplicate automatic disputes):
 
@@ -406,3 +408,8 @@ Guards enforced by triggers on instruction and item creation:
 ## 14. Related documents
 
 [State Machine](TRANSACTION_STATE_MACHINE.md) · [API](API_SPECIFICATION.md) · [Financial Engine](FINANCIAL_ENGINE.md) · [Evidence and Files](../04-operations/EVIDENCE_AND_FILE_HANDLING.md)
+
+
+## Implementation status note
+
+This document defines the intended product or technical behaviour. It is not, by itself, evidence that the current application implements or has passed tests for every requirement. The current implementation status, verified test results and known defects are recorded in the repository-root `STATUS_REPORT.md`. In particular, the 72-hour moderator-resolution deadline is specified but not yet implemented; the frontend simulator checkout is missing; return/refund defects remain open; and browser/PostgreSQL verification has not been completed.

@@ -235,3 +235,21 @@ All P0 pass; no open P0 or P1 defects; transition-table coverage 100%; invariant
 ## 8. Related documents
 
 [Acceptance Criteria](ACCEPTANCE_CRITERIA.md) · [State Machine](../03-technical-specs/TRANSACTION_STATE_MACHINE.md) · [Financial Engine](../03-technical-specs/FINANCIAL_ENGINE.md)
+
+
+## 7. Moderator-resolution deadline tests (required, not yet implemented)
+
+| ID | Scenario | Expected |
+|---|---|---|
+| TS-F13 | Dispute remains in `MODERATOR_REVIEW` for 72 hours | Worker marks it overdue, records an audit event and sends escalation notification exactly once; no decision, closure, payout, refund, acceptance or cancellation is created |
+| TS-F14 | Evidence window is still open | Moderator-resolution clock has not started; no false overdue flag |
+| TS-F15 | Dispute enters `MODERATOR_REVIEW` after evidence closes | `moderator_review_started_at` is set once and due time is exactly 72 elapsed hours later |
+| TS-F16 | Worker runs repeatedly or concurrently after deadline | One overdue transition and one escalation event only |
+| TS-F17 | Moderator decides before deadline | Deadline is cancelled/marked completed; later worker runs do not flag the dispute overdue |
+
+The 72-hour moderator-resolution deadline is separate from the 48-hour evidence window. These tests are acceptance targets; the deadline implementation is currently outstanding.
+
+
+## Implementation status note
+
+This document defines the intended product or technical behaviour. It is not, by itself, evidence that the current application implements or has passed tests for every requirement. The current implementation status, verified test results and known defects are recorded in the repository-root `STATUS_REPORT.md`. In particular, the 72-hour moderator-resolution deadline is specified but not yet implemented; the frontend simulator checkout is missing; return/refund defects remain open; and browser/PostgreSQL verification has not been completed.

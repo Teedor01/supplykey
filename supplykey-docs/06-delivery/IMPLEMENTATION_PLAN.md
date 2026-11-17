@@ -23,7 +23,7 @@ BE = Backend Engineer, FE = Frontend Engineer, UX = UI/UX Designer.
 | 3. Simulated payments and ledger (3 weeks) | Payment adapter, SimulatedPaymentProvider, `PAYMENT_RECEIVED` vs `FUNDS_SECURED`, balanced ledger, lot creation and allocation, resolver, P1 to P9 | Checkout, pending, unknown and funded screens; simulated-money banner | Payment states and trust copy | All payment failure, duplicate and unknown tests pass |
 | 4. Dispatch, delivery and evidence (2 weeks) | Dispatch by quantity, lot splitting, 72h scanner, evidence module, delivery-photo requirements for both parties with overdue scanner and gates, `confirm-received`, dispute creation, notifications v1 | Buyer and supplier delivery-photo requirement screens and uploads, dispatch declaration, receipt confirmation | Dispatch and delivery capture, requirement due dates and overdue states | Both-side requirement tests (TS-C1 to TS-C14) and missed-dispatch dispute tests pass |
 | 5. Acceptance, rejection and returns (3 weeks) | Quantity decisions, evidence windows and waivers, moderator acceptance queue, returns, 72h return timer, payout and refund instructions via simulator | Buyer item decisions, supplier return confirmation and contest, status timelines per quantity | Acceptance, rejection and return flows | 5-phone partial acceptance and partial refund simulation passes end to end |
-| 6. Disputes and moderation (3 weeks) | Dispute machine, windows, requests, decisions, lot freezes and the authorised-instruction creation guard, instruction approvals by a different senior moderator, computed amounts, audit viewer, financial worker | Moderator case file, evidence viewer, action history, approvals | Case review, notice and decision screens | Both parties can submit evidence; moderator outcome suite passes |
+| 6. Disputes and moderation (3 weeks) | Dispute machine, windows, requests, decisions, lot freezes and the authorised-instruction creation guard, instruction approvals by a different senior moderator, computed amounts, 72-hour moderator-resolution deadline and overdue escalation, audit viewer, financial worker | Moderator case file, evidence viewer, action history, approvals | Case review, notice and decision screens | Both parties can submit evidence; 72-hour moderator deadline and escalation tests pass; moderator outcome suite passes |
 | 7. Production readiness (3 weeks) | Reconciliation, kill switch, rate limits, monitoring, recovery drills; real provider adapter only after written approval | Operational states, support and error surfaces | Final copy, accessibility, usability checks | Legal and provider gates, security review and recovery drills pass |
 
 ## 3. Phase detail: dependencies, acceptance, testing
@@ -65,3 +65,8 @@ See [Team Responsibilities 3](TEAM_RESPONSIBILITIES.md#3-contracts-frozen-in-pha
 ## 7. Related documents
 
 [Team Responsibilities](TEAM_RESPONSIBILITIES.md) · [Open Decisions](OPEN_DECISIONS.md) · [Testing Strategy](../05-quality/TESTING_STRATEGY.md)
+
+
+## 8. Current delivery note
+
+The current source tree has not completed all phases in this plan. The payment callback integrity work and backend simulator are implemented, but the frontend simulator checkout, 72-hour moderator-resolution deadline, return/refund fixes and internal-note access correction remain outstanding. Browser and PostgreSQL verification have not been run. See the repository-root `STATUS_REPORT.md` for the current verified state.

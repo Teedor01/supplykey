@@ -7,7 +7,7 @@ The single list of locked product rules, configurable deadlines, calculation rul
 
 These rules are binding. Each has a stable rule ID so the other specifications can reference it without redefining it.
 
-| ID | Rule | Implemented in |
+| ID | Rule | Specification reference |
 |---|---|---|
 | SK-01 | Supplier creates the transaction; buyer reviews and agrees before paying. | [API 4](../03-technical-specs/API_SPECIFICATION.md#4-transactions-agreement-and-invitations), [DB agreement tables](../03-technical-specs/DATABASE_SPECIFICATION.md) |
 | SK-02 | A transaction has one item or multiple separately listed items (line items). | [DB `transaction_items`](../03-technical-specs/DATABASE_SPECIFICATION.md) |
@@ -27,17 +27,19 @@ These rules are binding. Each has a stable rule ID so the other specifications c
 | SK-16 | Partial acceptance, dispatch, returns and refunds work at item-quantity level. | [Database](../03-technical-specs/DATABASE_SPECIFICATION.md), [Financial Engine](../03-technical-specs/FINANCIAL_ENGINE.md) |
 | SK-17 | Both parties get notice and a chance to add evidence before any moderator decision (disputes and acceptance reviews). | [Dispute and Moderation](../04-operations/DISPUTE_AND_MODERATION.md) |
 | SK-18 | Every moderator action is audited. Moderators cannot edit financial history. Corrections use compensating ledger entries. | [Financial Engine](../03-technical-specs/FINANCIAL_ENGINE.md) |
+| SK-19 | A dispute must be resolved by a moderator within 72 hours after it enters `MODERATOR_REVIEW`. The server records the due time, sends reminders, and flags/escalates an overdue case. Expiry never decides the dispute or triggers a payout, refund or cancellation. This deadline is separate from the evidence window. | [Dispute and Moderation](../04-operations/DISPUTE_AND_MODERATION.md), [Notifications and Deadlines](../04-operations/NOTIFICATIONS_AND_DEADLINES.md) |
 
 Deferred by decision: a risk-based fast track that skips moderator review of acceptances. SK-09 stands for the MVP; changing it needs explicit sign-off because it removes the human check the product promises.
 
 ## 2. Deadlines and configuration
 
-All deadlines are computed on the server in UTC and read from `system_config`; each transaction snapshots the values at funding so later changes never alter in-flight deadlines.
+All deadlines are computed on the server in UTC and read from `system_config`; applicable transaction deadlines are snapshotted so later changes never alter in-flight deadlines. The moderator-resolution deadline starts when the dispute enters `MODERATOR_REVIEW`, after the evidence process has closed.
 
 | Config key | Default | Status | Rule |
 |---|---|---|---|
 | `dispatch_deadline_hours` | 72 | CONFIRMED | From backend-confirmed `funded_at` |
 | `return_confirmation_hours` | 72 | CONFIRMED | From validated return-handover evidence upload |
+| `moderator_resolution_hours` | 72 | CONFIRMED | From `moderator_review_started_at`; overdue cases are flagged/escalated, never decided automatically |
 | `evidence_window_hours` | 48 | PROPOSED ([OD-02](../06-delivery/OPEN_DECISIONS.md)) | Pre-decision window for disputes and acceptance reviews; moderator may extend once with a recorded reason |
 | `inspection_period_hours` | 72 | PROPOSED ([OD-01](../06-delivery/OPEN_DECISIONS.md)) | From buyer's explicit receipt confirmation; expiry opens moderator review, never auto-accepts or auto-refunds |
 | `return_handover_deadline_days` | 7 | PROPOSED ([OD-04](../06-delivery/OPEN_DECISIONS.md)) | From rejection; expiry routes to moderator review, never an automatic refund |
@@ -90,3 +92,8 @@ The obligation that both parties submit delivery photographs is confirmed. The t
 | Dispute | A moderator-reviewed case scoped to specific item quantities |
 | Release | Authorised movement of held funds to the supplier |
 | Refund | Authorised movement of held funds to the buyer |
+
+
+## 3. Implementation status
+
+The rules in this document define the required product behaviour. They are not a claim that every rule is already implemented in the current code. In particular, SK-19 is a confirmed requirement but the 72-hour moderator-resolution deadline and its worker enforcement are not yet implemented. See the repository-root `STATUS_REPORT.md` for current implementation and test status.

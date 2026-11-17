@@ -1,5 +1,7 @@
 const env = import.meta.env || {};
 
+// VITE_API_BASE_URL is an origin only (scheme + host + optional port).
+// The versioned API prefix belongs to this client and is added exactly once.
 export function normalizeApiOrigin(value = '') {
   const raw = String(value || '').trim().replace(/\/+$/, '');
   if (!raw) return '';

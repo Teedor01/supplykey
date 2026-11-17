@@ -104,3 +104,8 @@ If the 72-hour dispatch deadline passes with quantity undispatched, the supplier
 | Admin | Staff, configuration, audit, reconciliation exceptions |
 
 Copy rules for UX: say "funds secured" only when status is `FUNDS_SECURED`; never show a photograph as proof; explain that a timer expiry opens a review, not an automatic refund.
+
+
+## Implementation status note
+
+This document defines the intended product or technical behaviour. It is not, by itself, evidence that the current application implements or has passed tests for every requirement. The current implementation status, verified test results and known defects are recorded in the repository-root `STATUS_REPORT.md`. In particular, the 72-hour moderator-resolution deadline is specified but not yet implemented; the frontend simulator checkout is missing; return/refund defects remain open; and browser/PostgreSQL verification has not been completed.

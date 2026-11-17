@@ -47,7 +47,22 @@ The external launch dependencies are:
 
 Real-money launch is blocked until these dependencies and all launch-critical open decisions are resolved.
 
-## 5. Implementation readiness
+## 5. Current implementation status (17 November 2026)
+
+The current source tree has a separate implementation status report at the repository root. The latest reported verification is 129 backend tests passed, 10 frontend tests passed, frontend contract checks passed and the Vite production build passed. Browser tests, PostgreSQL migration/concurrency tests and live Paga Sandbox tests were not run.
+
+Known gaps at the time of this report:
+
+- The confirmed 72-hour moderator-resolution deadline is specified here but not implemented.
+- The backend simulator supports seven scenarios, but the frontend checkout screen is missing.
+- Empty and repeated partial return-receipt confirmations have unresolved defects.
+- Queued payout/refund instructions below the approval threshold do not post their authorisation journal entries.
+- Dispute detail responses expose internal moderator notes to participants.
+- PostgreSQL and full browser workflows remain unverified.
+
+This documentation describes target behaviour. It does not certify that the current code satisfies every requirement.
+
+## 6. Implementation readiness
 
 | Workstream | Readiness | Conditions |
 |---|---|---|

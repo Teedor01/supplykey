@@ -123,6 +123,9 @@ The dispute freeze persists while the authorised instruction is `PENDING_APPROVA
 
 `MODERATOR_REVIEW` means the evidence window is closed and a moderator is assessing the case. This status is used only for disputes; item review and decision review use their own statuses.
 
+When a dispute first enters `MODERATOR_REVIEW`, the server sets `moderator_review_started_at` and `moderator_decision_due_at = moderator_review_started_at + 72 hours`. This is the confirmed moderator-resolution deadline (SK-19). It is distinct from the preceding 48-hour evidence window. Requests for additional evidence and holds do not silently reset the deadline. If the deadline passes, the worker records an overdue/escalation event and notifies the appropriate staff. The dispute remains open; expiry never creates a decision, closes the dispute or moves money. This deadline is specified but not implemented in the current runtime.
+
+
 `disputes.reason_code`: `NO_DISPATCH`, `RETURN_NOT_CONFIRMED`, `RETURN_CONTESTED`, `ACCEPTANCE_DISAGREEMENT`, `SPEC_DISAGREEMENT`, `DELIVERY_DISAGREEMENT`, `SUSPICIOUS_EVIDENCE`, `INSPECTION_PERIOD_EXPIRED` (PROPOSED), `RETURN_HANDOVER_OVERDUE` (PROPOSED), `OTHER`.
 `disputes.origin`: `AUTO`, `BUYER`, `SUPPLIER`, `MODERATOR`.
 Decision outcomes (per lot and quantity): `RELEASE`, `REFUND`, `REDISPATCH_OR_REPLACEMENT`, `NO_FINANCIAL_ACTION`. Partial settlement is expressed as a decision with `RELEASE` and `REFUND` lines over different quantities of the same item. There is no separate `SPLIT` outcome or amount-level split ([OD-14](../06-delivery/OPEN_DECISIONS.md)).
@@ -272,7 +275,7 @@ Every lot transition re-checks: `released + refunded + pending_payout + pending_
 | # | From | Trigger | Actor | Preconditions | To | Effects | Notify / deadline | Failure |
 |---|---|---|---|---|---|---|---|---|
 | D1 | none | Auto or manual open | System, party, moderator | No duplicate open dispute for same reason and quantities | `EVIDENCE_WINDOW_OPEN` | Window W1 `ends_at` is computed from the configured OD-02 duration (proposed default 48h); lots frozen | Both parties, immediately, with affected quantities, funds status and deadline | `DISPUTE_ALREADY_OPEN` |
-| D2 | `EVIDENCE_WINDOW_OPEN` | Window elapsed or both waive | System / parties | | `MODERATOR_REVIEW` | Window closed | Notify moderator queue | |
+| D2 | `EVIDENCE_WINDOW_OPEN` | Window elapsed or both waive | System / parties | | `MODERATOR_REVIEW` | Set `moderator_review_started_at` once and `moderator_decision_due_at = +72h` | Notify moderator queue | |
 | D3 | `MODERATOR_REVIEW` | Request evidence | Moderator | | `AWAITING_EVIDENCE` | Request `OPEN` with `due_at` | Notify named party and the other | |
 | D4 | `AWAITING_EVIDENCE` | Evidence received or due date passed | System | | `MODERATOR_REVIEW` | Request closed | | |
 | D5 | `MODERATOR_REVIEW` | Hold | Moderator | Reason | `ON_HOLD` | Audit | Reminder every 48h (PROPOSED) | |
@@ -280,7 +283,8 @@ Every lot transition re-checks: `released + refunded + pending_payout + pending_
 | D7 | `MODERATOR_REVIEW` | Record decision | Moderator (not a party) | Window closed or waived; no open request; per-quantity outcomes whose quantities equal whole lots; reason of at least 50 characters; evidence ids; every `RELEASE` and `REFUND` amount equals the lot allocation (server-computed) | `AWAITING_SECOND_APPROVAL` if any created instruction is `PENDING_APPROVAL`, else `DECIDED` | `moderator_decisions` and `decision_outcomes` rows; instructions created through the authorised exception (F1): `PENDING_APPROVAL` when the instruction amount is at or above the threshold or the decision is flagged, else `QUEUED`; a `NO_FINANCIAL_ACTION`-only decision creates none | Notify both; senior moderators if approval needed | `EVIDENCE_WINDOW_OPEN`, `AMOUNT_MUST_MATCH_ALLOCATION`, `LOT_FROZEN` |
 | D8 | `AWAITING_SECOND_APPROVAL` | Approve the last pending instruction of the decision | Senior moderator, different person | Approver is `SENIOR_MODERATOR` and not the deciding moderator | `DECIDED` | Instruction `QUEUED` and its ledger journal posted (F2) | Notify both | `SELF_APPROVAL_NOT_ALLOWED` |
 | D9 | `AWAITING_SECOND_APPROVAL` | Decline an instruction of the decision | Senior moderator | Reason recorded | `MODERATOR_REVIEW` | Instruction `CANCELLED`; no ledger entry existed; original decision preserved; dispute freeze stays; a new decision supersedes | Notify moderator | |
-| D10 | `DECIDED` | All instructions terminal | System | | `CLOSED` | | Notify both with decision and reason | |
+| D10 | `DECIDED` | All instructions terminal | System | | `CLOSED` | | Notify both with decision and reason |
+| D11 | `MODERATOR_REVIEW`, `AWAITING_EVIDENCE`, `ON_HOLD` | 72-hour moderator deadline passes | Worker | No decision recorded | Same status with overdue flag | Record overdue timestamp and audit/escalation event once; no decision or financial instruction | Notify assigned and senior moderators | |
 
 ```mermaid
 stateDiagram-v2
@@ -406,3 +410,8 @@ A daily job matches provider settlement records to ledger journals by reference 
 ## 7. Related documents
 
 [Database](DATABASE_SPECIFICATION.md) · [API](API_SPECIFICATION.md) · [Financial Engine](FINANCIAL_ENGINE.md) · [Dispute and Moderation](../04-operations/DISPUTE_AND_MODERATION.md)
+
+
+## Implementation status note
+
+This document defines the intended product or technical behaviour. It is not, by itself, evidence that the current application implements or has passed tests for every requirement. The current implementation status, verified test results and known defects are recorded in the repository-root `STATUS_REPORT.md`. In particular, the 72-hour moderator-resolution deadline is specified but not yet implemented; the frontend simulator checkout is missing; return/refund defects remain open; and browser/PostgreSQL verification has not been completed.

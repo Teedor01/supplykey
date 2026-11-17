@@ -44,3 +44,17 @@ The mandatory conditions for considering implementation complete. Each criterion
 ## 3. Related documents
 
 [Testing Strategy](TESTING_STRATEGY.md) · [Business Rules](../01-product/BUSINESS_RULES.md) · [Product Requirements](../01-product/PRODUCT_REQUIREMENTS.md)
+
+
+## 2. Additional confirmed requirement awaiting implementation
+
+| ID | Criterion | Rules / FR | Tests |
+|---|---|---|---|
+| AC-25 | Given a dispute that has entered `MODERATOR_REVIEW`, when 72 hours elapse without a moderator decision, then the system records the case as overdue and creates an audit/escalation event and notification. It does not decide the dispute, close it, accept/reject goods, cancel the transaction, or create a payout/refund. The 72-hour clock starts at `moderator_review_started_at` and is separate from the 48-hour evidence window. | SK-19 | TS-F13 |
+
+**Implementation status:** AC-25 is a confirmed requirement and acceptance test target. It is not satisfied by the current implementation.
+
+
+## Implementation status note
+
+This document defines the intended product or technical behaviour. It is not, by itself, evidence that the current application implements or has passed tests for every requirement. The current implementation status, verified test results and known defects are recorded in the repository-root `STATUS_REPORT.md`. In particular, the 72-hour moderator-resolution deadline is specified but not yet implemented; the frontend simulator checkout is missing; return/refund defects remain open; and browser/PostgreSQL verification has not been completed.

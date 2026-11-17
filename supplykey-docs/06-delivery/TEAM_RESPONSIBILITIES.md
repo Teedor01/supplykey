@@ -64,3 +64,8 @@ Product owner (outside the three roles) is accountable for every item in [Open D
 ## 5. Related documents
 
 [Implementation Plan](IMPLEMENTATION_PLAN.md) · [Open Decisions](OPEN_DECISIONS.md)
+
+
+## Implementation status note
+
+This document defines the intended product or technical behaviour. It is not, by itself, evidence that the current application implements or has passed tests for every requirement. The current implementation status, verified test results and known defects are recorded in the repository-root `STATUS_REPORT.md`. In particular, the 72-hour moderator-resolution deadline is specified but not yet implemented; the frontend simulator checkout is missing; return/refund defects remain open; and browser/PostgreSQL verification has not been completed.

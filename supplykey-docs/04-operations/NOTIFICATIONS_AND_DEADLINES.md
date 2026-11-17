@@ -10,6 +10,7 @@ Every deadline the system enforces, who is told what and when, and the rules for
 | Supplier dispatch | `funded_at` (backend-verified `FUNDS_SECURED`) | 72 hours | Dispute `NO_DISPATCH` for outstanding quantity; no payout or refund | CONFIRMED |
 | Supplier return-receipt confirmation | Server commit time of validated return-handover evidence | 72 hours | One dispute per return for outstanding quantity; no refund | CONFIRMED |
 | Pre-decision evidence window | Notice to both parties (acceptance submitted or dispute opened) | 48 hours; moderator may extend once with reason | Moves to moderator review | PROPOSED ([OD-02](../06-delivery/OPEN_DECISIONS.md)) |
+| Moderator dispute resolution | Dispute enters `MODERATOR_REVIEW` after the evidence process closes | 72 hours | Flag and escalate overdue case; no automatic decision or financial action | CONFIRMED (SK-19); not yet implemented |
 | Moderator evidence request | Moderator request | Moderator-set `due_at` | Request `EXPIRED`; decision unblocked | Moderator-set |
 | Supplier delivery photographs | Dispatch declaration | Dispatch time + agreed expected delivery days + 24h; earlier (receipt confirmation + 24h) if the buyer confirms receipt first | Requirement `OVERDUE`; notices; moderator confirmation needs an acknowledgement; nothing automatic | PROPOSED ([OD-16](../06-delivery/OPEN_DECISIONS.md)); the obligation itself is CONFIRMED |
 | Buyer delivery photographs | Buyer receipt confirmation | Before acceptance or rejection; by `inspection_deadline_at` once approved | Acceptance and rejection refused (`DELIVERY_PHOTOS_REQUIRED`); requirement `OVERDUE` at the inspection deadline; nothing automatic | PROPOSED ([OD-16](../06-delivery/OPEN_DECISIONS.md)); the obligation itself is CONFIRMED |
@@ -55,6 +56,8 @@ Channels: in-app always; email by default; SMS optional (cost to be decided). Se
 | Return receipt confirmed | Buyer | Quantities refund-eligible |
 | Return contested | Buyer | Reason and dispute notice |
 | Dispute opened | Both, immediately | Issue, quantities, funds status, evidence deadline |
+| Dispute enters moderator review | Assigned moderator, senior moderators/ops as configured | 72-hour decision deadline and case summary |
+| Moderator resolution deadline approaching / overdue | Assigned moderator, senior moderators/ops | Remaining time or overdue status; no automatic outcome |
 | Dispute decision | Both | Outcome per quantity, written reason |
 | Instruction awaiting approval (`PENDING_APPROVAL`) | Senior moderators (not the deciding moderator) | Amount, case summary, deciding moderator |
 | Approval declined | Deciding moderator, both parties if a dispute opens | Reason, what happens next |
@@ -65,6 +68,6 @@ Channels: in-app always; email by default; SMS optional (cost to be decided). Se
 
 `reminder_sender` (every 15 minutes) reads deadlines and enqueues a reminder once per `(deadline, offset)`. Reminders are suppressed once the underlying action is complete.
 
-## 4. Related documents
+## 4. Implementation status\n\nThe 72-hour moderator-resolution deadline is a confirmed product requirement. It is measured from the time the dispute enters `MODERATOR_REVIEW`, not from the opening of the 48-hour evidence window. The current implementation does not yet store or enforce this deadline. The worker, audit event and notifications still need to be implemented and tested.\n\n## 5. Related documents
 
 [Component Design 3](../02-architecture/COMPONENT_DESIGN.md#3-background-jobs) · [Dispute and Moderation](DISPUTE_AND_MODERATION.md) · [API 13](../03-technical-specs/API_SPECIFICATION.md#13-notifications)

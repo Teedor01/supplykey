@@ -156,3 +156,8 @@ Each requirement traces to rule IDs in [Business Rules](BUSINESS_RULES.md) and t
 ## 8. Related documents
 
 [Business Rules](BUSINESS_RULES.md) · [User Flows](USER_FLOWS.md) · [Acceptance Criteria](../05-quality/ACCEPTANCE_CRITERIA.md) · [Open Decisions](../06-delivery/OPEN_DECISIONS.md)
+
+
+## Implementation status note
+
+This document defines the intended product or technical behaviour. It is not, by itself, evidence that the current application implements or has passed tests for every requirement. The current implementation status, verified test results and known defects are recorded in the repository-root `STATUS_REPORT.md`. In particular, the 72-hour moderator-resolution deadline is specified but not yet implemented; the frontend simulator checkout is missing; return/refund defects remain open; and browser/PostgreSQL verification has not been completed.

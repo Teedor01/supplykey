@@ -193,3 +193,8 @@ Every transition has a defined financial effect: either none, or a path through 
 ## 10. Related documents
 
 [State Machine](TRANSACTION_STATE_MACHINE.md) · [Database 9](DATABASE_SPECIFICATION.md#9-payments-ledger-and-instructions) · [Payment Provider Integration](../04-operations/PAYMENT_PROVIDER_INTEGRATION.md) · [Dispute and Moderation](../04-operations/DISPUTE_AND_MODERATION.md)
+
+
+## Implementation status note
+
+This document defines the intended product or technical behaviour. It is not, by itself, evidence that the current application implements or has passed tests for every requirement. The current implementation status, verified test results and known defects are recorded in the repository-root `STATUS_REPORT.md`. In particular, the 72-hour moderator-resolution deadline is specified but not yet implemented; the frontend simulator checkout is missing; return/refund defects remain open; and browser/PostgreSQL verification has not been completed.

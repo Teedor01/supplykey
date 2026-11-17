@@ -118,3 +118,17 @@ If Paga does not approve this use case, evaluate a licensed escrow/holding partn
 ## 9. Related documents
 
 [Financial Engine](../03-technical-specs/FINANCIAL_ENGINE.md) · [Component Design](../02-architecture/COMPONENT_DESIGN.md) · [Open Decisions](../06-delivery/OPEN_DECISIONS.md)
+
+
+## Implementation status note
+
+This document defines the intended product or technical behaviour. It is not, by itself, evidence that the current application implements or has passed tests for every requirement. The current implementation status, verified test results and known defects are recorded in the repository-root `STATUS_REPORT.md`. In particular, the 72-hour moderator-resolution deadline is specified but not yet implemented; the frontend simulator checkout is missing; return/refund defects remain open; and browser/PostgreSQL verification has not been completed.
+
+
+## Current implementation and verification status
+
+The backend now has a local simulated provider with `SUCCESS`, `FAILURE`, `PENDING`, `DELAYED`, `DUPLICATE`, `TIMEOUT` and `UNKNOWN` scenarios. The server creates and signs events; the client supplies only a scenario. The simulator is restricted to demo use and blocked in production.
+
+The frontend checkout screen for this simulator has not been built. The simulator is not a Paga transaction and does not move real money.
+
+The Paga adapter code has not been successfully exercised against SupplyKey's own Sandbox credentials. The previous attempt was rejected with `Account not sufficiently verified`; do not retry until Paga confirms the account is enabled. The latest project status and known implementation defects are recorded in the repository-root `STATUS_REPORT.md`.

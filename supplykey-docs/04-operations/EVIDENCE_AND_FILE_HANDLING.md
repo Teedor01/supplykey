@@ -91,3 +91,8 @@ Retention periods for evidence and financial records are OPEN ([OD-11](../06-del
 ## 9. Related documents
 
 [Database 7](../03-technical-specs/DATABASE_SPECIFICATION.md#7-evidence-windows-and-requests) · [Security Architecture](../02-architecture/SECURITY_ARCHITECTURE.md) · [Dispute and Moderation](DISPUTE_AND_MODERATION.md)
+
+
+## Implementation status note
+
+This document defines the intended product or technical behaviour. It is not, by itself, evidence that the current application implements or has passed tests for every requirement. The current implementation status, verified test results and known defects are recorded in the repository-root `STATUS_REPORT.md`. In particular, the 72-hour moderator-resolution deadline is specified but not yet implemented; the frontend simulator checkout is missing; return/refund defects remain open; and browser/PostgreSQL verification has not been completed.

@@ -6,7 +6,7 @@ This documentation defines the SupplyKey product, business rules, system archite
 
 SupplyKey is a conditional payment protection and transaction coordination platform for buyers and suppliers who do not fully trust each other. A buyer can purchase goods from a supplier in another city without sending money directly to an unknown party, while the supplier can dispatch after the system verifies that the required funds are secured through an approved arrangement.
 
-SupplyKey coordinates transaction terms, preserves the agreement, records evidence from both parties, enforces deadlines and provides a moderator-led process for resolving disputes. Financial operations are controlled by the backend financial module.
+SupplyKey coordinates transaction terms, preserves the agreement, records evidence from both parties, enforces deadlines and provides a moderator-led process for resolving disputes. The evidence window is separate from the moderator's 72-hour resolution deadline, which starts when the dispute enters `MODERATOR_REVIEW`. Financial operations are controlled by the backend financial module.
 
 SupplyKey does not provide logistics, riders or couriers. Photographs are evidence and do not independently prove delivery or physical receipt. Paga's ability to support conditional holding or escrow-like custody has not been confirmed. Real-money operation requires written provider confirmation and Nigerian legal approval. Development must use the `SimulatedPaymentProvider`; no real customer funds may move before the launch requirements in [Payment Provider Integration](04-operations/PAYMENT_PROVIDER_INTEGRATION.md) are satisfied.
 
@@ -69,3 +69,10 @@ Then continue by role:
 ## 6. Scope
 
 This package specifies the product and its implementation. It does not contain an implemented application, database migrations, a generated OpenAPI document or executed application tests. The test cases and acceptance criteria are specifications until implemented and run.
+
+
+## 6. Current implementation status
+
+This package is the product and technical specification, not a statement that every requirement is implemented. The current code has passed the reported 129 backend tests, 10 frontend tests, frontend contract checks and production build. Browser tests, PostgreSQL migration/concurrency tests and live Paga Sandbox tests were not run.
+
+The backend payment-integrity fixes and seven-scenario local simulator are implemented. The frontend simulator checkout is not. The 72-hour moderator-resolution deadline is specified but not implemented. Return/refund defects and an internal-moderator-note exposure remain open. See the repository-root `STATUS_REPORT.md` for the current implementation report.

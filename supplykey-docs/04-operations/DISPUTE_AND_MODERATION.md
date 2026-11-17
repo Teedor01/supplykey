@@ -25,7 +25,23 @@ How acceptance reviews and disputes are run: notices, evidence windows, moderato
 | Evidence requests | Moderator names the party, question and `due_at`; the decision stays blocked until the request is fulfilled or its due date passes |
 | Notice content | What happened, affected items and quantities, current funds status (held, frozen), the evidence deadline, what each party can upload |
 
-## 3. Acceptance review
+## 3. Moderator resolution deadline
+
+Once the evidence process is closed and a dispute enters `MODERATOR_REVIEW`, the assigned moderator has 72 hours to record a decision or a documented escalation/hold.
+
+The server must record:
+
+- `moderator_review_started_at`
+- `moderator_decision_due_at = moderator_review_started_at + 72 hours`
+- the current overdue/escalation state and its audit history
+
+The worker must send reminders before the deadline and flag/escalate the dispute when the deadline passes. An overdue case remains open for moderator handling. The system must not infer fault, close the dispute, accept goods, cancel the transaction, release funds or issue a refund because the deadline expired.
+
+This 72-hour moderator deadline is separate from the 48-hour evidence window. The evidence window runs before moderator review begins. A moderator evidence request can pause the decision workflow according to its own `due_at`; the system must not silently extend or reset the 72-hour deadline. Any approved extension or reassignment needs an audited reason and explicit policy.
+
+**Implementation status:** this is a confirmed product requirement, but the deadline fields, worker enforcement, notifications and escalation are not implemented in the current code. See the root `STATUS_REPORT.md`.
+
+## 4. Acceptance review
 
 ```mermaid
 flowchart TD
@@ -54,7 +70,7 @@ flowchart TD
 
 Moderator checklist for an acceptance: both parties' delivery-photograph requirements (the buyer's must be `SUBMITTED` or `SUBMITTED_LATE`; the supplier's `SUBMITTED`, `SUBMITTED_LATE`, or `OVERDUE` which needs a recorded acknowledgement before confirming; `PENDING` blocks confirmation); agreement version and hash; buyer photographs against each agreed acceptance condition; supplier delivery photographs and dispatch evidence; receipt confirmation time; evidence flags (duplicate hash, missing or inconsistent metadata); history of earlier cases for both parties.
 
-## 4. Dispute triggers and how they are handled
+## 5. Dispute triggers and how they are handled
 
 | Trigger | Reason code | Opened by | Scope | Moderator guidance |
 |---|---|---|---|---|
@@ -89,7 +105,7 @@ stateDiagram-v2
 
 *Diagram source: [`DISPUTE_FLOW.mmd`](../diagrams/DISPUTE_FLOW.mmd)*
 
-## 5. Decisions
+## 6. Decisions
 
 A decision records per lot and quantity one outcome:
 
@@ -103,7 +119,7 @@ A decision records per lot and quantity one outcome:
 
 Every decision (and every acceptance confirmation) includes: written reason (at least 50 characters), `evidence_ids_considered`, decision maker, timestamp, any second approver. A changed mind is a new decision that supersedes the old one; nothing is edited. The chosen outcome must be supported by the agreed terms and the evidence.
 
-## 6. Approvals
+## 7. Approvals
 
 Approval attaches to the instruction, because the instruction carries the amount. An instruction is `PENDING_APPROVAL` when its amount is at or above `high_value_threshold_kobo` (₦500,000, `50000000` kobo, PROPOSED, [OD-07](../06-delivery/OPEN_DECISIONS.md)) or the decision has an acknowledged suspicious-evidence flag. The sequence is always:
 
@@ -113,7 +129,7 @@ Approval attaches to the instruction, because the instruction carries the amount
 
 A senior moderator who declines (`/decline`, with a reason) cancels the instruction; a payout or return refund declined this way opens a dispute for the quantity (`ACCEPTANCE_DISAGREEMENT` or `OTHER`), and a dispute-origin instruction returns the dispute to `MODERATOR_REVIEW` for a new decision that supersedes the old one. Below the threshold a single moderator's decision is enough and the instruction is `QUEUED` at creation. A single approving action creates at most one payout and one refund, so the threshold cannot be avoided by slicing ([Security Architecture 6](../02-architecture/SECURITY_ARCHITECTURE.md#6-approval-thresholds-proposed)).
 
-## 7. Moderator tools
+## 8. Moderator tools
 
 | Tool | Description |
 |---|---|
@@ -123,10 +139,10 @@ A senior moderator who declines (`/decline`, with a reason) cancels the instruct
 | Disabled states | Confirm and decide are disabled with the reason shown (window open, request open, supplier delivery photographs pending, lot frozen by another case) |
 | Audit viewer | Every action by actor, with before and after |
 
-## 8. Service levels
+## 9. Service levels
 
-Median decision time and moderator staffing are not yet confirmed. The target in [Product Requirements 7](../01-product/PRODUCT_REQUIREMENTS.md#7-success-criteria-proposed-targets) is PROPOSED. Staffing and SLA are OPEN ([OD-13](../06-delivery/OPEN_DECISIONS.md)). Holds raise reminders every 48 hours (PROPOSED).
+The maximum resolution deadline is 72 elapsed hours after a dispute enters `MODERATOR_REVIEW` (CONFIRMED, SK-19). The operational target is median resolution under 24 business hours (PROPOSED). Staffing and coverage must support the maximum deadline; overdue cases are escalated and never auto-decided. Holds raise reminders every 48 hours (PROPOSED). The deadline is not implemented in the current code.
 
-## 9. Related documents
+## 10. Related documents
 
 [State Machine 4.4 to 4.7](../03-technical-specs/TRANSACTION_STATE_MACHINE.md#4-transitions) · [Evidence and Files](EVIDENCE_AND_FILE_HANDLING.md) · [Notifications and Deadlines](NOTIFICATIONS_AND_DEADLINES.md) · [Financial Engine](../03-technical-specs/FINANCIAL_ENGINE.md)

@@ -41,7 +41,7 @@ def test_end_to_end_simulated_funding_and_dispatch():
         s=SessionLocal()
         try: provider_ref=s.get(Payment,pay['payment_id']).provider_ref
         finally: s.close()
-        payload=json.dumps({'provider_ref':provider_ref,'status':status,'event_id':event_id},separators=(',',':')).encode()
+        payload=json.dumps({'provider_ref':provider_ref,'status':status,'event_id':event_id,'amount_kobo':pay['amount_kobo']},separators=(',',':')).encode()  # money callbacks must now carry the exact stored amount
         sig=hmac.new(SECRET,payload,hashlib.sha256).hexdigest()
         return client.post('/api/v1/webhooks/payments/simulated',content=payload,headers={'X-Sim-Signature':sig,'Content-Type':'application/json'})
     assert webhook('PAYMENT_RECEIVED','evt-1').status_code==200
@@ -140,7 +140,7 @@ def test_partial_receipt_acceptance_and_independent_financial_approval(monkeypat
     payment=client.post(f'/api/v1/transactions/{tid}/payments',headers={**buyer,'Idempotency-Key':'high-value-payment'},json={}).json()['data']
     ss=SessionLocal();provider_ref=ss.get(Payment,payment['payment_id']).provider_ref;ss.close()
     for status,event in [('PAYMENT_RECEIVED','hi-1'),('FUNDS_SECURED','hi-2')]:
-        payload=json.dumps({'provider_ref':provider_ref,'status':status,'event_id':event},separators=(',',':')).encode();sig=hmac.new(SECRET,payload,hashlib.sha256).hexdigest()
+        payload=json.dumps({'provider_ref':provider_ref,'status':status,'event_id':event,'amount_kobo':payment['amount_kobo']},separators=(',',':')).encode();sig=hmac.new(SECRET,payload,hashlib.sha256).hexdigest()
         assert client.post('/api/v1/webhooks/payments/simulated',content=payload,headers={'X-Sim-Signature':sig}).status_code==200
     tx=client.get(f'/api/v1/transactions/{tid}',headers=supplier).json();iid=tx['items'][0]['id']
     dispatch_proof=upload(supplier,tid,'DISPATCH_PROOF')

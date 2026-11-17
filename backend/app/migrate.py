@@ -1,4 +1,5 @@
-from . import config as _config  
+"""Apply the checked-in initial schema migration or create a local SQLite dev schema."""
+from . import config as _config  # Load backend/.env before selecting the database.
 import os
 from pathlib import Path
 from .db import init_db

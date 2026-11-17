@@ -81,3 +81,8 @@ Thresholds live in `system_config`; changing them needs two admins and is record
 ## 7. Related documents
 
 [Dispute and Moderation](../04-operations/DISPUTE_AND_MODERATION.md) · [Evidence and Files](../04-operations/EVIDENCE_AND_FILE_HANDLING.md) · [Testing Strategy](../05-quality/TESTING_STRATEGY.md)
+
+
+## Implementation status note
+
+This document defines the intended product or technical behaviour. It is not, by itself, evidence that the current application implements or has passed tests for every requirement. The current implementation status, verified test results and known defects are recorded in the repository-root `STATUS_REPORT.md`. In particular, the 72-hour moderator-resolution deadline is specified but not yet implemented; the frontend simulator checkout is missing; return/refund defects remain open; and browser/PostgreSQL verification has not been completed.

@@ -6,19 +6,30 @@ from contextlib import asynccontextmanager
 from fastapi import FastAPI, Depends, HTTPException, Request, Header, Response, UploadFile, File
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
+from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 from starlette.middleware.base import BaseHTTPMiddleware
 from fastapi.exceptions import RequestValidationError
+from starlette.concurrency import run_in_threadpool
 from sqlalchemy.orm import Session
 from sqlalchemy import select
 from .db import (SessionLocal, init_db, User, SessionToken, Aggregate, Payment, Idempotency, Audit, Evidence, Instruction, Dispute, Notification, Journal, LedgerEntry, ProviderEvent, RefreshSession, PagaSubsidiaryAccount, ProviderEventProcessing, now)
 from .providers.paga import PagaClient, PagaConfig, PagaError, PagaUnknownOutcome
+from .providers import simulated as sim
+from . import payment_state as ps
+from sqlalchemy.exc import IntegrityError
 from decimal import Decimal, InvalidOperation
 from cryptography.fernet import Fernet, InvalidToken
 
 APP_ENV=os.getenv('APP_ENV','development'); SECRET=os.getenv('SUPPLYKEY_SECRET','dev-only-change-this-secret-before-deploy').encode()
-ACCESS_MINUTES=int(os.getenv('ACCESS_TOKEN_MINUTES','30')); SIM_SCENARIO=os.getenv('SIMULATED_PAYMENT_SCENARIO','PENDING'); WORKER_SECRET=os.getenv('WORKER_SECRET','dev-worker-secret')
+ACCESS_MINUTES=int(os.getenv('ACCESS_TOKEN_MINUTES','30')); WORKER_SECRET=os.getenv('WORKER_SECRET','dev-worker-secret')
 @asynccontextmanager
 async def lifespan(app):
+    provider_cfg=os.getenv('PAYMENT_PROVIDER','simulated').lower()
+    if APP_ENV=='production' and provider_cfg!='paga':
+        raise RuntimeError('PAYMENT_PROVIDER must be paga in production. The local payment simulator is never permitted in production.')
+    if provider_cfg=='simulated':
+        try:sim.configured_scenario()
+        except ValueError as exc:raise RuntimeError(str(exc))
     if APP_ENV=='production' and os.getenv('SUPPLYKEY_SECRET','dev-only-change-this-secret-before-deploy')=='dev-only-change-this-secret-before-deploy':
         raise RuntimeError('SUPPLYKEY_SECRET must be replaced before production startup.')
     if APP_ENV=='production' and (len(SECRET)<32 or len(WORKER_SECRET)<32):
@@ -39,6 +50,8 @@ async def lifespan(app):
     init_db()
     yield
 app=FastAPI(title='SupplyKey API',version='1.1.0',description='SupplyKey modular monolith API with a local simulator and gated Paga Engine adapter.',lifespan=lifespan)
+# Declare bearer auth to FastAPI/OpenAPI while retaining database-backed token validation.
+bearer_scheme = HTTPBearer(auto_error=False, scheme_name='BearerAuth', description='SupplyKey access token. Obtain an administrator token through password login followed by MFA verification.')
 app.add_middleware(CORSMiddleware,allow_origins=os.getenv('CORS_ORIGINS','http://localhost:5173,http://127.0.0.1:5173').split(','),allow_credentials=True,allow_methods=['*'],allow_headers=['*'])
 _rate_windows={};_rate_lock=threading.Lock()
 class ApiRateLimitMiddleware(BaseHTTPMiddleware):
@@ -125,8 +138,10 @@ def issue_refresh(s:Session,user:User,family_id=None):
     token=secrets.token_urlsafe(48);s.add(RefreshSession(id=uid(),user_id=user.id,family_id=family_id or uid(),token_hash=hashlib.sha256(token.encode()).hexdigest(),expires_at=now()+timedelta(days=30)));s.commit();return token
 def set_refresh_cookie(response:Response,token):
     response.set_cookie('sk_refresh',token,httponly=True,secure=APP_ENV=='production',samesite='lax',max_age=30*24*3600,path='/api/v1/auth')
-def current_user(request:Request,s:Session=Depends(db)):
-    auth=request.headers.get('authorization',''); token=auth[7:] if auth.lower().startswith('bearer ') else ''
+def current_user(credentials:HTTPAuthorizationCredentials|None=Depends(bearer_scheme),s:Session=Depends(db)):
+    # HTTPBearer contributes the OpenAPI security requirement; token validity is
+    # still decided exclusively by the existing hashed SessionToken lookup below.
+    token=credentials.credentials if credentials and credentials.scheme.lower()=='bearer' else ''
     if not token: fail(401,'UNAUTHENTICATED','Authentication required.')
     row=s.scalar(select(SessionToken).where(SessionToken.token_hash==hashlib.sha256(token.encode()).hexdigest(),SessionToken.revoked==False,SessionToken.mfa_pending==False))
     if not row or row.expires_at.replace(tzinfo=timezone.utc)<now(): fail(401,'UNAUTHENTICATED','Access token expired or invalid.')
@@ -187,6 +202,7 @@ def allowed_actions(tx,user):
     if any(x.get('review_status')=='SUBMITTED_FOR_REVIEW' and x.get('evidence_window',{}).get('status')=='OPEN' for x in d.get('decisions',[])) and role:a+=['add_review_evidence','waive_window']
     if d.get('dispute') and d['dispute'].get('status')=='EVIDENCE_WINDOW_OPEN' and role:a+=['add_dispute_evidence','waive_dispute_window']
     if any(p.get('status') in ['PENDING','PAYMENT_RECEIVED','UNKNOWN'] for p in d.get('payments',[])) and role=='BUYER':a+=['refresh_payment']
+    if role=='BUYER' and sim.simulator_allowed() and any(p.get('mode')==sim.MODE and p.get('status') in ['PENDING','UNKNOWN'] for p in d.get('payments',[])):a+=['simulate_payment']
     return list(dict.fromkeys(a))
 def present_tx(tx,user):
     d=tx_data(tx); d.update({'id':tx.id,'reference':tx.reference,'status':tx.status,'version':tx.version,'supplier_id':tx.supplier_id,'buyer_id':tx.buyer_id,'allowed_actions':allowed_actions(tx,user) if user else [],'created_at':iso(tx.created_at),'updated_at':iso(tx.updated_at)})
@@ -484,9 +500,11 @@ def start_payment(tid:str,body:dict,s:Session=Depends(db),u:User=Depends(current
             save_tx(s,tx,d);audit(s,u,'PAGA_ACCOUNT_CREATION_FAILED','PAYMENT',p.id,{'provider_reference':provider_ref,'reason':str(exc)})
             response={'data':{'payment_id':p.id,'status':'FAILED','amount_kobo':amount,'mode':cfg.provider_mode,'checkout':d['payments'][-1]['checkout'],'transaction_status':tx.status}}
     else:
-        p=Payment(id=uid(),transaction_id=tid,amount_kobo=amount,status='PENDING',provider_ref='sim_'+secrets.token_hex(12),mode='SIMULATED'); s.add(p)
-        d.setdefault('payments',[]).append({'id':p.id,'payment_id':p.id,'status':'PENDING','amount_kobo':amount,'mode':'SIMULATED','provider_ref':p.provider_ref,'checkout':{'type':'SIMULATED'}});save_tx(s,tx,d);audit(s,u,'SIMULATED_PAYMENT_STARTED','PAYMENT',p.id,{'amount_kobo':amount})
-        response={'data':{'payment_id':p.id,'status':'PENDING','amount_kobo':amount,'mode':'SIMULATED','checkout':{'type':'SIMULATED'},'transaction_status':tx.status}}
+        if not sim.simulator_allowed():fail(503,'SIMULATOR_DISABLED','The local payment simulator is not enabled in this environment.')
+        checkout=simulated_checkout()
+        p=Payment(id=uid(),transaction_id=tid,amount_kobo=amount,status='PENDING',provider_ref='sim_'+secrets.token_hex(12),mode=sim.MODE); s.add(p)
+        d.setdefault('payments',[]).append({'id':p.id,'payment_id':p.id,'status':'PENDING','amount_kobo':amount,'mode':sim.MODE,'simulated':True,'provider_ref':p.provider_ref,'checkout':checkout});save_tx(s,tx,d);audit(s,u,'SIMULATED_PAYMENT_STARTED','PAYMENT',p.id,{'amount_kobo':amount,'mode':sim.MODE})
+        response={'data':{'payment_id':p.id,'status':'PENDING','amount_kobo':amount,'mode':sim.MODE,'simulated':True,'checkout':checkout,'transaction_status':tx.status}}
     remember(s,u,endpoint,idempotency_key,digest,response); s.commit(); return response
 @app.get('/api/v1/transactions/{tid}/payments')
 def payments(tid:str,s:Session=Depends(db),u:User=Depends(current_user)):
@@ -510,6 +528,7 @@ def refresh_payment(tid:str,pid:str,s:Session=Depends(db),u:User=Depends(current
                         d=tx_data(tx);d['payments']=[{**x,'status':'PAYMENT_RECEIVED','checkout':{**x.get('checkout',{}),'amount_received_kobo':balance_kobo,'remaining_kobo':p.amount_kobo-balance_kobo,'instructions':'A partial transfer has been received. Transfer the remaining amount to the same Paga account; funding is not secured until the exact total is confirmed.'}} if x.get('id')==p.id else x for x in d.get('payments',[])];save_tx(s,tx,d);s.commit()
             except (PagaError,InvalidOperation):
                 pass
+    if p.mode==sim.MODE:release_due_simulation(s,p,tx)
     return {'status':p.status,'transaction_status':tx.status,'mode':p.mode}
 def secure_paga_payment(s,p,tx,account,balance_kobo):
     if p.status=='FUNDS_SECURED':return
@@ -581,41 +600,177 @@ async def paga_bank_transfer_webhook(request:Request,s:Session=Depends(db),x_pag
     s.add(ProviderEvent(id=uid(),provider_name='PAGA_PAYOUT',provider_event_id=event_id,event_type=str(body.get('transactionType') or 'PAYOUT_STATUS'),signature_valid=True,raw_body=body));s.commit()
     return {'status':'SUCCESS','queued':True}
 
+# ---------------------------------------------------------------------------
+# Payment callback ingestion (simulated provider) and the local simulator.
+#
+# Every provider result, whether it arrives over HTTP or is produced by the
+# server-side simulator, goes through ingest_payment_event(): signature check,
+# payment resolution, reference / currency / integer-kobo amount validation,
+# explicit monotonic state-transition check, then one atomic commit that holds
+# the payment status, transaction status, ledger journals, audit and event
+# record together.
+# ---------------------------------------------------------------------------
+_payment_locks={};_payment_locks_guard=threading.Lock()
+def payment_lock(key):
+    """Serialise callbacks for one payment inside this process. PostgreSQL row locks
+    (SELECT ... FOR UPDATE) and the ledger/provider-event unique constraints protect
+    multi-process deployments; this lock also makes SQLite development deterministic."""
+    with _payment_locks_guard:
+        return _payment_locks.setdefault(key,threading.Lock())
+def simulated_checkout():
+    try:default=sim.configured_scenario()
+    except ValueError:default='PENDING'
+    return {'type':'SIMULATED','simulated':True,'not_paga':True,'provider':'SupplyKey Payment Simulator','label':sim.SIMULATION_LABEL,'scenarios':list(sim.SCENARIOS),'default_scenario':default,'instructions':'This is a SupplyKey payment simulation. Choose an outcome to simulate. No real money moves and nothing is sent to Paga.'}
+_SIM_STATUS_TEXT={'FUNDS_SECURED':'Simulated funds secured. This is a SupplyKey simulation, not a Paga settlement.','FAILED':'Simulated payment failed. No funds were secured and nothing was charged. You may start a new attempt.','UNKNOWN':'The simulated provider outcome is unknown. Choose a definitive simulated outcome to reconcile; do not start another attempt.','PAYMENT_RECEIVED':'Simulated payment received; confirming secure holding.'}
+def _reject_callback(s,event,code,message,http,payment=None,details=None,review=False):
+    """Record a rejected callback safely (no payment or transaction change), then raise."""
+    mark_paga_event(s,event,'REJECTED',code)
+    audit(s,None,'PAYMENT_CALLBACK_REJECTED','PAYMENT',payment.id if payment else event.id,{'code':code,'provider':event.provider_name,'event_id':event.provider_event_id,'event_status':event.event_type,'mode':sim.MODE,'requires_review':review,**(details or {})})
+    s.commit();fail(http,code,message,details)
+def fund_transaction(s,p,tx,d):
+    """P3/T4: secure funds, create lots and post the FUNDS_SECURED journal. Caller commits."""
+    d['funded_at']=iso();d['dispatch_deadline_at']=iso(now()+timedelta(hours=72));d['config_snapshot']={'dispatch_deadline_hours':72,'high_value_threshold_kobo':50000000}
+    d['lots']=[{'id':uid(),'item_id':item['id'],'quantity':item['quantity'],'unit_start':1,'unit_end':item['quantity'],'item_status':'AWAITING_DISPATCH','money_status':'HELD','allocation_kobo':item['line_total_kobo'],'is_frozen':False} for item in d['items']]
+    post_journal(s,tx.id,'FUNDS_SECURED',p.id,[('RECEIVED_UNSECURED','DEBIT',p.amount_kobo),('HELD_FUNDS','CREDIT',p.amount_kobo)])
+def ingest_payment_event(s,provider,raw,signature):
+    if provider!=sim.PROVIDER_NAME or not sim.simulator_allowed():fail(404,'NOT_FOUND','Unknown payment webhook provider.')
+    try:body=json.loads(raw)
+    except Exception:fail(400,'VALIDATION_FAILED','Invalid JSON webhook body.')
+    if not isinstance(body,dict):fail(400,'VALIDATION_FAILED','Webhook body must be a JSON object.')
+    expected=hmac.new(sim.signing_secret(),raw,hashlib.sha256).hexdigest()
+    if not signature or not hmac.compare_digest(signature,expected):
+        # Unsigned traffic must never consume a real (provider, event_id) pair, or an
+        # attacker could pre-register event ids and make genuine events look like replays.
+        digest=hashlib.sha256(raw).hexdigest();bad=provider+'_INVALID_SIGNATURE'
+        if not s.scalar(select(ProviderEvent).where(ProviderEvent.provider_name==bad,ProviderEvent.provider_event_id==digest)):
+            s.add(ProviderEvent(id=uid(),provider_name=bad,provider_event_id=digest,event_type='INVALID_SIGNATURE',signature_valid=False,raw_body=body))
+            try:s.commit()
+            except IntegrityError:s.rollback()
+        fail(401,'INVALID_WEBHOOK_SIGNATURE','Webhook signature is invalid.')
+    event_id=body.get('event_id');provider_ref=body.get('provider_ref')
+    if not isinstance(event_id,str) or not event_id.strip() or len(event_id)>128:fail(400,'VALIDATION_FAILED','event_id is required for replay protection.')
+    if not isinstance(provider_ref,str) or not provider_ref.strip():fail(400,'VALIDATION_FAILED','provider_ref is required.')
+    with payment_lock(provider_ref.strip()):
+        return _ingest_locked(s,provider,body,event_id.strip(),provider_ref.strip())
+def _ingest_locked(s,provider,body,event_id,provider_ref):
+    if s.scalar(select(ProviderEvent).where(ProviderEvent.provider_name==provider,ProviderEvent.provider_event_id==event_id)):
+        return {'received':True,'duplicate':True,'processed':False}
+    status=str(body.get('status') or 'UNKNOWN')
+    event=ProviderEvent(id=uid(),provider_name=provider,provider_event_id=event_id,event_type=status[:64],signature_valid=True,raw_body=body);s.add(event)
+    try:s.flush()
+    except IntegrityError:
+        s.rollback();return {'received':True,'duplicate':True,'processed':False}
+    p=s.scalar(select(Payment).where(Payment.provider_ref==provider_ref).with_for_update())
+    if not p:_reject_callback(s,event,'PAYMENT_NOT_FOUND','No payment matches this provider reference.',404)
+    tx=s.scalar(select(Aggregate).where(Aggregate.id==p.transaction_id).with_for_update());d=tx_data(tx)
+    if p.mode!=sim.MODE:_reject_callback(s,event,'CALLBACK_PROVIDER_MISMATCH','This callback type cannot affect a payment created by another provider.',409,p)
+    if status not in ps.EVENT_STATUSES:_reject_callback(s,event,'CALLBACK_STATUS_INVALID','Unsupported callback status.',422,p,{'status':status})
+    ref=body.get('transaction_reference')
+    if ref is not None and ref!=tx.reference:_reject_callback(s,event,'CALLBACK_REFERENCE_MISMATCH','The callback transaction reference does not match this payment.',422,p)
+    currency=body.get('currency')
+    if currency is not None and str(currency).upper()!='NGN':_reject_callback(s,event,'CALLBACK_CURRENCY_MISMATCH','The callback currency does not match this payment.',422,p,{'expected_currency':'NGN'})
+    amount=body.get('amount_kobo')
+    if (status in ps.MONEY_EVENTS or amount is not None) and (isinstance(amount,bool) or not isinstance(amount,int)):
+        _reject_callback(s,event,'CALLBACK_AMOUNT_INVALID','The callback must carry the amount as an integer number of kobo.',422,p)
+    if amount is not None and amount!=p.amount_kobo:
+        _reject_callback(s,event,'CALLBACK_AMOUNT_MISMATCH','The callback amount does not match the stored payment amount.',422,p,{'expected_amount_kobo':p.amount_kobo,'received_amount_kobo':amount},review=True)
+    if d.get('total_payable_kobo')!=p.amount_kobo:
+        _reject_callback(s,event,'PAYMENT_AMOUNT_INCONSISTENT','The stored payment amount no longer matches the transaction total.',409,p,review=True)
+    decision=ps.evaluate_transition(p.status,status)
+    if decision.kind==ps.NOOP:
+        mark_paga_event(s,event,'IGNORED',decision.reason);s.commit()
+        return {'received':True,'processed':False,'reason':decision.reason,'payment_status':p.status,'transaction_status':tx.status}
+    if decision.kind==ps.REJECT:
+        _reject_callback(s,event,'INVALID_PAYMENT_TRANSITION','This callback is not a valid next state for the payment.',409,p,{'from_status':p.status,'to_status':status,'reason':decision.reason},review=True)
+    if status in ps.MONEY_EVENTS and tx.status!='AWAITING_PAYMENT':
+        _reject_callback(s,event,'TRANSACTION_NOT_AWAITING_PAYMENT','The transaction can no longer accept funding; manual review is required.',409,p,{'transaction_status':tx.status},review=True)
+    before=p.status;new=decision.new_status
+    try:
+        new_tx_status=None
+        if new==ps.PAYMENT_RECEIVED:
+            p.status=new;post_journal(s,tx.id,'PAYMENT_RECEIVED',p.id,[('PROVIDER_CLEARING','DEBIT',p.amount_kobo),('RECEIVED_UNSECURED','CREDIT',p.amount_kobo)])
+        elif new==ps.FUNDS_SECURED:
+            # Collection and hold verified in one step: P2 is applied first so the ledger stays balanced.
+            post_journal(s,tx.id,'PAYMENT_RECEIVED',p.id,[('PROVIDER_CLEARING','DEBIT',p.amount_kobo),('RECEIVED_UNSECURED','CREDIT',p.amount_kobo)])
+            p.status=new;fund_transaction(s,p,tx,d);new_tx_status='FUNDED'
+        else:
+            p.status=new
+        d['payments']=[{**x,'status':p.status,'checkout':{**x.get('checkout',{}),'instructions':_SIM_STATUS_TEXT.get(p.status,x.get('checkout',{}).get('instructions'))}} if x.get('id')==p.id else x for x in d.get('payments',[])]
+        save_tx(s,tx,d,new_tx_status)
+        audit(s,None,'PROVIDER_WEBHOOK_PROCESSED','PAYMENT',p.id,{'provider':provider,'mode':sim.MODE,'simulated':True,'event_id':event_id,'from_status':before,'status':p.status})
+        if p.status=='FUNDS_SECURED':
+            for uid_ in (tx.supplier_id,tx.buyer_id):notify(s,uid_,'FUNDS_SECURED',tx.id,{'reference':tx.reference,'mode':sim.MODE})
+        elif p.status=='FAILED':notify(s,tx.buyer_id,'PAYMENT_FAILED',tx.id,{'reference':tx.reference,'mode':sim.MODE})
+        mark_paga_event(s,event,'PROCESSED',None);s.commit()
+    except IntegrityError:
+        s.rollback();return {'received':True,'duplicate':True,'processed':False,'reason':'CONCURRENT_EVENT'}
+    return {'received':True,'processed':True,'payment_status':p.status,'transaction_status':tx.status}
 @app.post('/api/v1/webhooks/payments/{provider}')
 async def payment_webhook(provider:str,request:Request,s:Session=Depends(db),x_sim_signature:str|None=Header(default=None)):
-    if provider!='simulated':fail(404,'NOT_FOUND','Unknown payment webhook provider.')
-    raw=await request.body(); expected=hmac.new(SECRET,raw,hashlib.sha256).hexdigest()
-    try: body=json.loads(raw)
-    except:fail(400,'VALIDATION_FAILED','Invalid JSON webhook body.')
-    if not x_sim_signature or not hmac.compare_digest(x_sim_signature,expected):
-        event_id=str(body.get('event_id') or uid())
-        if not s.scalar(select(ProviderEvent).where(ProviderEvent.provider_name==provider,ProviderEvent.provider_event_id==event_id)):
-            s.add(ProviderEvent(id=uid(),provider_name=provider,provider_event_id=event_id,event_type=str(body.get('status','UNKNOWN')),signature_valid=False,raw_body=body));s.commit()
-        fail(401,'INVALID_WEBHOOK_SIGNATURE','Webhook signature is invalid.')
-    event_id=str(body.get('event_id') or '')
-    if not event_id:fail(400,'VALIDATION_FAILED','event_id is required for replay protection.')
-    duplicate=s.scalar(select(ProviderEvent).where(ProviderEvent.provider_name==provider,ProviderEvent.provider_event_id==event_id))
-    if duplicate:return {'received':True,'duplicate':True,'processed':False}
-    event=ProviderEvent(id=uid(),provider_name=provider,provider_event_id=event_id,event_type=str(body.get('status','UNKNOWN')),signature_valid=True,raw_body=body);s.add(event)
-    p=s.scalar(select(Payment).where(Payment.provider_ref==body.get('provider_ref')))
-    if not p:s.commit();return {'received':True,'processed':False}
-    tx=s.get(Aggregate,p.transaction_id); d=tx_data(tx); status=body.get('status')
-    if status=='PAYMENT_RECEIVED':
-        p.status='PAYMENT_RECEIVED';post_journal(s,tx.id,'PAYMENT_RECEIVED',p.id,[('PROVIDER_CLEARING','DEBIT',p.amount_kobo),('RECEIVED_UNSECURED','CREDIT',p.amount_kobo)])
-    elif status=='FUNDS_SECURED':
-        if p.status not in ['PAYMENT_RECEIVED','PENDING']:s.commit();return {'received':True,'processed':False}
-        p.status='FUNDS_SECURED'; tx.status='FUNDED'; d['funded_at']=iso(); d['dispatch_deadline_at']=iso(now()+timedelta(hours=72)); d['config_snapshot']={'dispatch_deadline_hours':72,'high_value_threshold_kobo':50000000}
-        d['lots']=[]
-        for item in d['items']:
-            d['lots'].append({'id':uid(),'item_id':item['id'],'quantity':item['quantity'],'unit_start':1,'unit_end':item['quantity'],'item_status':'AWAITING_DISPATCH','money_status':'HELD','allocation_kobo':item['line_total_kobo'],'is_frozen':False})
-        post_journal(s,tx.id,'FUNDS_SECURED',p.id,[('RECEIVED_UNSECURED','DEBIT',p.amount_kobo),('HELD_FUNDS','CREDIT',p.amount_kobo)])
-        d['funded_at']=iso()
-    elif status=='FAILED':p.status='FAILED'
-    elif status=='UNKNOWN':p.status='UNKNOWN'
-    d['payments']=[{**x,'status':p.status} if x.get('id')==p.id else x for x in d.get('payments',[])]
-    tx.data=d; audit(s,None,'PROVIDER_WEBHOOK_PROCESSED','PAYMENT',p.id,{'provider':provider,'status':p.status});
-    if p.status=='FUNDS_SECURED':notify(s,tx.supplier_id,'FUNDS_SECURED',tx.id,{'reference':tx.reference});notify(s,tx.buyer_id,'FUNDS_SECURED',tx.id,{'reference':tx.reference})
-    s.commit(); return {'received':True,'processed':True,'payment_status':p.status,'transaction_status':tx.status}
+    raw=await request.body()
+    # Blocking DB work runs off the event loop so concurrent callbacks are genuinely concurrent.
+    return await run_in_threadpool(ingest_payment_event,s,provider,raw,x_sim_signature)
+def _event_result(result):
+    if result.get('duplicate'):return 'DUPLICATE'
+    return 'APPLIED' if result.get('processed') else 'IGNORED:'+str(result.get('reason'))
+def deliver_simulated_events(s,p,tx,scenario):
+    """Build provider callbacks on the server, sign them with the server-side secret and
+    ingest them through the same validated path a real webhook uses."""
+    out=[]
+    for ev in sim.build_events(scenario,p.id,p.provider_ref,p.amount_kobo,tx.reference):
+        raw=json.dumps(ev,separators=(',',':')).encode();sig=hmac.new(sim.signing_secret(),raw,hashlib.sha256).hexdigest()
+        out.append({'event_id':ev['event_id'],'status':ev['status'],'result':_event_result(ingest_payment_event(s,sim.PROVIDER_NAME,raw,sig))})
+    return out
+def _sim_payment_view(p,tx,scenario,events=None,note=None):
+    return {'data':{'payment_id':p.id,'status':p.status,'amount_kobo':p.amount_kobo,'mode':sim.MODE,'simulated':True,'not_paga':True,'label':sim.SIMULATION_LABEL,'scenario':scenario,'transaction_status':tx.status,'events':events or [],**({'note':note} if note else {})}}
+@app.post('/api/v1/transactions/{tid}/payments/{pid}/simulate')
+def simulate_payment(tid:str,pid:str,body:dict,s:Session=Depends(db),u:User=Depends(current_user)):
+    """Run a named simulator scenario for the caller's own simulated payment.
+    The client chooses a scenario only. It cannot supply amounts, statuses, references or signatures."""
+    if not sim.simulator_allowed():fail(403,'SIMULATOR_DISABLED','The local payment simulator is not enabled in this environment.')
+    extra=set(body or {})-{'scenario'}
+    if extra:fail(400,'VALIDATION_FAILED','A simulation request accepts only a scenario.',{'rejected_fields':sorted(extra)})
+    tx=tx_get(s,tid,u)
+    if tx.buyer_id!=u.id:fail(403,'FORBIDDEN','Only the buyer can complete this payment.')
+    p=s.get(Payment,pid)
+    if not p or p.transaction_id!=tid:fail(404,'NOT_FOUND','Payment not found.')
+    if p.mode!=sim.MODE:fail(409,'NOT_A_SIMULATED_PAYMENT','Only SupplyKey-simulated payments can be completed in the simulator.')
+    try:default=sim.configured_scenario()
+    except ValueError:default='PENDING'
+    scenario=sim.normalize_scenario((body or {}).get('scenario'),default)
+    if not scenario:fail(400,'VALIDATION_FAILED','Unknown simulator scenario.',{'allowed':list(sim.SCENARIOS)})
+    audit(s,u,'SIMULATED_SCENARIO_REQUESTED','PAYMENT',p.id,{'scenario':scenario,'mode':sim.MODE,'payment_status':p.status});s.commit()
+    if scenario=='PENDING':
+        return _sim_payment_view(p,tx,scenario,note='Payment left pending by the simulator. Nothing was secured.')
+    if scenario=='DELAYED':
+        if p.status!='PENDING':fail(409,'INVALID_PAYMENT_TRANSITION','Only a pending simulated payment can be delayed.',{'payment_status':p.status})
+        release_at=iso(now()+timedelta(seconds=sim.delay_seconds()));d=tx_data(tx)
+        d['payments']=[{**x,'simulation':{'scenario':'DELAYED','release_at':release_at,'requested_by':u.id}} if x.get('id')==p.id else x for x in d.get('payments',[])]
+        save_tx(s,tx,d);audit(s,u,'SIMULATED_PAYMENT_DELAYED','PAYMENT',p.id,{'release_at':release_at,'mode':sim.MODE});s.commit()
+        return _sim_payment_view(p,tx,scenario,note=f'The simulated provider will confirm this payment at {release_at}. It remains pending until then.')
+    events=deliver_simulated_events(s,p,tx,scenario)
+    s.refresh(p);s.refresh(tx)
+    return _sim_payment_view(p,tx,scenario,events)
+def release_due_simulation(s,p,tx=None):
+    """Deliver a DELAYED scenario's SUCCESS events once their release time has passed. Idempotent."""
+    if p.mode!=sim.MODE or p.status!='PENDING' or not sim.simulator_allowed():return False
+    tx=tx or s.get(Aggregate,p.transaction_id);d=tx_data(tx)
+    entry=next((x for x in d.get('payments',[]) if x.get('id')==p.id),None);simu=(entry or {}).get('simulation')
+    if not simu or simu.get('scenario')!='DELAYED' or simu.get('released_at'):return False
+    if datetime.fromisoformat(simu['release_at'].replace('Z','+00:00'))>now():return False
+    outcome='APPLIED'
+    try:deliver_simulated_events(s,p,tx,'DELAYED')
+    except HTTPException as exc:outcome='REJECTED:'+str((exc.detail or {}).get('error',{}).get('code') if isinstance(exc.detail,dict) else exc.detail)
+    s.refresh(tx);d=tx_data(tx)
+    d['payments']=[{**x,'simulation':{**x.get('simulation',{}),'released_at':iso(),'outcome':outcome}} if x.get('id')==p.id else x for x in d.get('payments',[])]
+    save_tx(s,tx,d);audit(s,None,'SIMULATED_DELAYED_PAYMENT_RELEASED','PAYMENT',p.id,{'mode':sim.MODE,'outcome':outcome});s.commit();return True
+def run_simulated_payments(s:Session):
+    """Worker step: release due DELAYED simulated payments. No-op outside simulator environments."""
+    if not sim.simulator_allowed():return {'released':0,'mode':sim.MODE,'enabled':False}
+    released=0
+    for p in s.scalars(select(Payment).where(Payment.mode==sim.MODE,Payment.status=='PENDING')).all():
+        if release_due_simulation(s,p):released+=1
+    return {'released':released,'mode':sim.MODE,'enabled':True}
 @app.post('/api/v1/transactions/{tid}/dispatch')
 def dispatch(tid:str,body:dict,s:Session=Depends(db),u:User=Depends(current_user)):
     tx=tx_get(s,tid,u); d=tx_data(tx)
@@ -1608,7 +1763,9 @@ def run_financial(s:Session):
 def transaction_ledger(tid:str,s:Session=Depends(db),u:User=Depends(current_user)):
     tx=tx_get(s,tid,u,staff=u.role in ['MODERATOR','SENIOR_MODERATOR']);rows=s.scalars(select(LedgerEntry).where(LedgerEntry.transaction_id==tid)).all()
     journals={j.id:j for j in s.scalars(select(Journal).where(Journal.transaction_id==tid)).all()}
-    return {'data':[{'journal_id':r.journal_id,'entry_type':journals[r.journal_id].entry_type,'account_code':r.account_code,'direction':r.direction,'amount_kobo':r.amount_kobo,'created_at':iso(r.created_at)} for r in rows]}
+    modes={p.id:p.mode for p in s.scalars(select(Payment).where(Payment.transaction_id==tid)).all()}
+    # provider_mode is set where the journal originates from a payment, so simulated money is never mistaken for a real settlement.
+    return {'data':[{'journal_id':r.journal_id,'entry_type':journals[r.journal_id].entry_type,'account_code':r.account_code,'direction':r.direction,'amount_kobo':r.amount_kobo,'created_at':iso(r.created_at),'provider_mode':modes.get(journals[r.journal_id].reference_id)} for r in rows]}
 
 @app.post('/api/v1/worker/run-deadlines')
 def worker_deadlines(x_worker_secret:str|None=Header(default=None,alias='X-Worker-Secret'),s:Session=Depends(db)):

@@ -1,4 +1,4 @@
-from . import config as _config  
+from . import config as _config  # Load backend/.env before checking APP_ENV.
 import os,sys
 from sqlalchemy import select
 from .db import SessionLocal,init_db,User

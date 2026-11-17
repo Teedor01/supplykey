@@ -142,6 +142,16 @@ Response to payment start:
 
 The checkout shape is adapter-defined (VERIFY with the real provider). After checkout the UI shows "Confirming payment" and polls `GET /transactions/{id}`. The UI shows "Funds secured" only when `payment.status = FUNDS_SECURED` and `status = FUNDED`; `PAYMENT_RECEIVED` is shown as "Payment received, confirming secure holding".
 
+### Local payment simulation endpoint
+
+| Endpoint | Purpose | Actor | Behaviour |
+|---|---|---|---|
+| `POST /transactions/{id}/payments/{payment_id}/simulate` | Run a local simulated payment scenario | Buyer who owns the transaction | Demo-only endpoint. Request body: `{ "scenario": "SUCCESS" }`. Supported values: `SUCCESS`, `FAILURE`, `PENDING`, `DELAYED`, `DUPLICATE`, `TIMEOUT`, `UNKNOWN`. The backend validates ownership and demo-mode configuration, creates and signs the event itself, then processes it through the normal payment event path. The client cannot submit a trusted callback status or signature. Blocked in production. |
+
+The configured `SIMULATED_PAYMENT_SCENARIO` is the default scenario when the request does not select one, where supported by the endpoint contract. The simulator does not move real money and must label its records as simulated.
+
+**Implementation status:** the backend endpoint and provider are implemented. The frontend checkout screen for selecting and running scenarios is not implemented yet.
+
 ## 6. Dispatch
 
 `POST /transactions/{id}/dispatch` , Supplier. Requires `status = FUNDED`, server time before `dispatch_deadline_at`, and lots `AWAITING_DISPATCH` covering the declared quantities (L2). Partial dispatch by quantity is allowed (RECOMMENDED, [OD-03](../06-delivery/OPEN_DECISIONS.md)).
@@ -294,7 +304,7 @@ Partial confirmation request and response:
 | Method and URL | Purpose | Authz | Rules |
 |---|---|---|---|
 | `POST /transactions/{id}/disputes` | Raise a manual dispute | Buyer, supplier | Body `{reason_code, lines:[{item_id, quantity}], statement}`; `409 DISPUTE_ALREADY_OPEN` (D1) |
-| `GET /disputes/{id}` | Dispute view | Participants | Both sides' evidence, window end, affected quantities, funds status; no internal notes |
+| `GET /disputes/{id}` | Dispute view | Participants | Both sides' evidence, evidence-window end, moderator decision due time when in review, affected quantities and funds status; never return internal moderator notes |
 | `POST /disputes/{id}/evidence` | Evidence or statement | Participants | Allowed while the window is `OPEN` or a request is `OPEN`; `kind` `STATEMENT` or `CONSENT` |
 | `POST /disputes/{id}/waive-window` | Waive further evidence | Participants | Closes only when both waive |
 
@@ -306,6 +316,12 @@ Dispute opened automatically for a missed dispatch deadline (what both parties r
   "funds": { "status": "HELD", "is_frozen": true, "amount_kobo": 44000000 },
   "evidence_window": { "status": "OPEN", "ends_at": "2026-11-16T09:30:00Z" } } }
 ```
+
+### Moderator-resolution deadline fields
+
+When a dispute enters `MODERATOR_REVIEW`, the dispute response must expose `moderator_review_started_at`, `moderator_decision_due_at` and an overdue/escalation indicator. The deadline is 72 hours from the start of moderator review, not from dispute creation and not the preceding 48-hour evidence window. Expiry only flags/escalates the case; it never decides the dispute or moves money.
+
+**Implementation status:** the current backend does not yet persist or enforce these fields. This section defines the required API contract for the outstanding implementation.
 
 ## 11. Moderator and admin
 
@@ -396,3 +412,8 @@ The UI renders buttons only from this list.
 ## 16. Related documents
 
 [State Machine](TRANSACTION_STATE_MACHINE.md) · [Database](DATABASE_SPECIFICATION.md) · [Evidence and Files](../04-operations/EVIDENCE_AND_FILE_HANDLING.md) · [Acceptance Criteria](../05-quality/ACCEPTANCE_CRITERIA.md)
+
+
+## Implementation status note
+
+This document defines the intended product or technical behaviour. It is not, by itself, evidence that the current application implements or has passed tests for every requirement. The current implementation status, verified test results and known defects are recorded in the repository-root `STATUS_REPORT.md`. In particular, the 72-hour moderator-resolution deadline is specified but not yet implemented; the frontend simulator checkout is missing; return/refund defects remain open; and browser/PostgreSQL verification has not been completed.

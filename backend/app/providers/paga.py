@@ -1,3 +1,9 @@
+"""Paga Engine adapter.
+
+Implements the documented Subsidiary Accounts (ledger-backed) collection flow and
+Business API bank transfer primitives. Live operation is gated separately by the
+application because provider API availability is not equivalent to escrow approval.
+"""
 from __future__ import annotations
 
 # Also load backend/.env when this adapter is imported independently.
