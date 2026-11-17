@@ -133,21 +133,7 @@ The backend simulator is available for controlled local testing. However, the fr
 
 The simulator is independent of Paga. It does not process real payments or move real money.
 
-## Verification status
 
-The latest reported verification results for this implementation are:
-
-| Check | Result |
-|---|---:|
-| Backend tests | 129 passed, 0 failed, 0 skipped |
-| Frontend tests | 10 passed |
-| Frontend contract checks | Passed |
-| Frontend production build | Passed |
-| Browser tests | Not run |
-| PostgreSQL migration and concurrency tests | Not run |
-| Live Paga Sandbox tests | Not run |
-
-These results describe the reported test run. They should not be interpreted as proof that every user journey or external integration has been verified.
 
 ### Outstanding issues
 
