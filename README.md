@@ -135,20 +135,6 @@ The simulator is independent of Paga. It does not process real payments or move 
 
 
 
-### Outstanding issues
-
-The following work remains incomplete:
-
-- The separate 72-hour moderator-resolution deadline has not been implemented. It is distinct from the existing 48-hour evidence window.
-- The frontend simulator checkout screen is missing.
-- Return and refund workflows still have identified defects, including empty receipt confirmations, repeated partial confirmations, and missing ledger authorization entries for queued refunds and releases.
-- Dispute details require further access-control work to prevent parties from seeing moderator-only internal notes.
-- Full browser-based transaction verification has not been completed.
-- PostgreSQL migration and concurrency behaviour remain unverified.
-- Live Paga Sandbox processing has not been verified.
-
-See [`STATUS_REPORT.md`](STATUS_REPORT.md) for the current findings and [`IMPLEMENTATION_REPORT.md`](IMPLEMENTATION_REPORT.md) for implementation scope and limitations.
-
 ## Safety and production readiness
 
 SupplyKey is currently a development implementation. It has not been approved for production custody of customer funds or real-money transactions.
