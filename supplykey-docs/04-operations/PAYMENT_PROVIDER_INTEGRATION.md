@@ -1,88 +1,120 @@
 # Payment Provider Integration
 
-
-What we know and do not know about the payment provider, the simulator used for all development, the adapter requirements, and the gates that block real-money launch. This document does not claim that Paga supports escrow or conditional custody.
+Provider capabilities, the adapter used by SupplyKey, the Paga integration, and the gates that block real-money launch. A payment collection is not automatically proof of conditional custody or legal escrow.
 
 ## 1. Position
 
-- Paga is the *intended* payment infrastructure. No Paga documentation was provided to this documentation effort, so no Paga capability below is treated as documented. Every row marked VERIFY needs written confirmation from Paga.
-- A subsidiary account, merchant balance or wallet is not an approved escrow or conditional-custody arrangement. Do not simulate escrow with an ordinary operating account.
-- Real-money launch is BLOCKED until (1) the provider confirms the arrangement in writing and (2) qualified Nigerian counsel approves it.
-- All development, staging and demos use the SimulatedPaymentProvider. All demo money is labelled simulated; no real funds move.
+- Paga Engine is the intended payment infrastructure. Its current developer documentation describes collections, ledger-backed Subsidiary Accounts, internal account movements, bank payouts, refunds for selected collection products, callbacks and reconciliation.
+- Paga documents Subsidiary Accounts as real Paga accounts with their own NUBAN and balance. Omitting `autoSweep` creates a ledger-backed account that holds funds. Paga also states that the business remains the legal owner of those accounts.
+- These capabilities are useful building blocks, but they do **not** by themselves confirm that Paga has approved SupplyKey's marketplace transaction-protection model, conditional release rules, or third-party fund custody. Written Paga approval and qualified Nigerian legal advice remain mandatory before live funds are accepted.
+- Development and staging use Paga Sandbox or the local simulator. No live provider credentials belong in source control.
+- Live mode is disabled unless explicit provider-custody and legal-approval configuration gates are satisfied.
 
-## 2. Capability matrix
+Official Paga references:
 
-| Capability needed | Status | Action |
+- [Paga Engine documentation](https://developer-docs.paga.com/)
+- [Get started and sandbox setup](https://developer-docs.paga.com/docs/get-started)
+- [Subsidiary Accounts](https://developer-docs.paga.com/docs/subsidiary-accounts)
+- [Money Transfer](https://developer-docs.paga.com/docs/money-transfer-payout)
+- [Dynamic virtual accounts](https://developer-docs.paga.com/docs/virtual-account)
+- [Refunds](https://developer-docs.paga.com/docs/refunds)
+- [Authentication](https://developer-docs.paga.com/docs/authentication)
+- [Business API error codes](https://developer-docs.paga.com/docs/error-codes)
+
+## 2. Relevant Paga products and limitations
+
+| Paga capability | Documented behaviour | SupplyKey use / limitation |
 |---|---|---|
-| Collection of buyer payment (card, transfer, wallet) | ASSUMPTION: likely offered | VERIFY product, fees, limits, settlement timing |
-| Conditional holding of collected funds, not available to the supplier until released | UNKNOWN | Written confirmation from provider and legal opinion |
-| Distinction between payment received and funds held or secured | UNKNOWN | VERIFY that status queries expose both |
-| Partial payout to supplier by lot or amount | UNKNOWN | VERIFY |
-| Partial refund to buyer (original source) | UNKNOWN | VERIFY, including timing and fee treatment |
-| Webhook notifications with signature | UNKNOWN | VERIFY scheme, retry policy, ordering, replay protection |
-| Status query for collection, hold, payout, refund | UNKNOWN | Needed to resolve `UNKNOWN` outcomes |
-| Idempotency or unique merchant reference | UNKNOWN | Needed for safe retries |
-| Settlement reports | UNKNOWN | Needed for reconciliation |
-| Sandbox that reproduces delay, failure, duplicates | UNKNOWN | Needed for adapter tests |
-| Fees, limits, settlement times for holding, payout, refund | UNKNOWN | EXT-03 in [Open Decisions](../06-delivery/OPEN_DECISIONS.md) |
-| Regulatory status of holding third-party funds (licensing, customer-money treatment, KYC/AML, dispute liability, the legal entity that holds funds) | UNKNOWN | EXT-02 legal advice |
+| Dynamic virtual account | One-time collection account; payments settle to the merchant business account | Not used for transaction custody because it settles to the general business account |
+| Ledger-backed Subsidiary Account | Permanent NUBAN with its own balance; omit `autoSweep` to hold funds | Used as the transaction-specific collection account in the Paga adapter |
+| Subsidiary account charge | Moves funds from a subsidiary account to the Paga business balance | First step of a bank payout; must be recorded and reconciled |
+| Subsidiary account transfer | Moves funds between two Subsidiary Accounts | Available for future internal account flows; legal and product approval still required |
+| Business API bank transfer | Validates a bank destination and submits a transfer from the Paga business balance | Used for payout/refund bank-transfer submission after the transaction account is charged |
+| `/refund/v2` | Full or partial refunds for Dynamic Virtual Account, Bank USSD and Paga Wallet payment requests | Not assumed to apply to Subsidiary Account deposits |
+| Callbacks and status query | Signed callbacks and transaction/account status operations | Every callback is signature-checked and deduplicated; ambiguous outcomes remain unresolved until reconciliation |
 
-## 3. Written questions to send to the provider
+## 3. Paga environments and credentials
 
-1. Which product collects payments, and can money be held after collection so that it cannot be paid to the merchant until we instruct release?
-2. Who is the legal holder of the funds during the hold? Is there a trust, escrow or partner arrangement?
-3. Can release be partial (by amount) and repeated for one collection? Can refund be partial and to the original source?
-4. How do status queries distinguish collected, held, released, refunded and failed?
-5. What are the webhook signing scheme, retry behaviour, ordering and replay protection?
-6. Is there an idempotency key or unique reference for payout and refund requests? What happens on duplicates?
-7. Fees, transaction and balance limits, settlement and refund times.
-8. Settlement report format and availability for reconciliation.
-9. Sandbox behaviour for delays, failures, duplicates and ambiguous results.
-10. Terms for disputes, chargebacks and reversals involving held funds.
+Paga documents separate Sandbox and Live accounts, credentials and base URLs.
 
-## 4. SimulatedPaymentProvider specification
-
-Implements the full [adapter contract](../02-architecture/COMPONENT_DESIGN.md#4-payment-adapter-contract) with `mode = SIMULATED`. All scenarios are selectable per payment via a test flag so the team can reproduce every state-machine path.
-
-| Scenario | Behaviour | Expected platform result |
+| Service | Sandbox | Live |
 |---|---|---|
-| Success | Collection received and held | `PAYMENT_RECEIVED` then `FUNDS_SECURED`, `FUNDED` |
-| Received but not secured | Collection succeeds, hold query says not secured | Stays `PAYMENT_RECEIVED`, transaction not funded, exception |
-| Explicit failure | Provider reports failure | `FAILED` |
-| Delayed success | Webhook after minutes | `PENDING` then success path |
-| Pending forever | Never resolves | `UNKNOWN` after expiry; resolver polling |
-| Timeout on status | Query times out | `UNKNOWN`, no funding |
-| Duplicate webhook | Same event delivered repeatedly | One effect |
-| Forged webhook | Bad signature | `401`, stored and flagged |
-| Amount mismatch | Provider amount differs | No funding, exception |
-| Payout success, failure, timeout, duplicate | Configurable per instruction | `SUCCEEDED`, `FAILED`, `UNKNOWN`, one effect |
-| Refund success, failure, timeout, duplicate | Same | Same |
-| Partial payout and refund | Supported | Lot-level instructions |
-| Settlement report | Generated from simulator records, with optional injected mismatches | Reconciliation exceptions |
+| Collect / Subsidiary Accounts | `https://beta-collect.paga.com` | `https://collect.paga.com` |
+| Business API / bank transfers | `https://beta.mypaga.com` | `https://www.mypaga.com` |
 
-Every API response that involves money includes `"mode": "SIMULATED"` and the UI shows a "Simulated money" banner.
+Paga Sandbox requires account registration and approval. API keys are obtained from the Paga Business portal. Paga also requires the integration server's IP address to be whitelisted for Business API operations.
 
-## 5. Adapter requirements
+Backend configuration is supplied through environment variables:
 
-- Provider-neutral interface; no provider types or codes leak into the transaction engine or the financial module.
-- Raw requests and responses stored.
-- Any result other than explicit success or failure is `UNKNOWN`; never retry with a new idempotency key.
-- `capabilities()` is checked before enabling production mode. If `supportsConditionalHolding`, `supportsPartialPayout`, `supportsPartialRefund`, `supportsStatusQuery` or `supportsIdempotencyKey` is false, the engine refuses to produce `FUNDS_SECURED` in `PRODUCTION` mode.
-- Every real adapter must pass the same contract test suite as the simulator ([Testing Strategy 6](../05-quality/TESTING_STRATEGY.md#6-payment-adapter-contract-tests)).
+- `PAYMENT_PROVIDER=simulated` or `paga`
+- `PAGA_MODE=disabled`, `sandbox` or `live`
+- `PAGA_PUBLIC_KEY`, `PAGA_SECRET_KEY`, `PAGA_HASH_KEY`
+- `PAGA_CALLBACK_URL` for Subsidiary Account funding callbacks
+- `PAGA_PAYOUT_CALLBACK_URL` for bank-transfer status callbacks
+- `PAGA_BUSINESS_NAME`
+- `PAYOUT_ENCRYPTION_KEY` for encrypted bank destinations
+- `PAGA_CONDITIONAL_CUSTODY_APPROVED=true` and `PAGA_LEGAL_APPROVAL_REFERENCE` only after the corresponding written approvals exist
 
-## 6. Real-money launch gates
+Callback URLs must be public HTTPS endpoints. A local development server needs a secure public tunnel for callback testing. Do not commit `.env` files or credentials.
+
+## 4. Transaction collection flow
+
+1. Buyer confirms the immutable agreement.
+2. Backend creates a payment attempt with a stable provider reference and a transaction-specific Subsidiary Account reference.
+3. Backend creates a Paga Subsidiary Account with `autoSweep` omitted, so the account is ledger-backed rather than swept to the business account or a bank.
+4. Backend displays the returned Paga NUBAN, account name and exact amount to the buyer.
+5. Buyer transfers the exact amount to that account.
+6. Paga sends a funding callback to `PAGA_CALLBACK_URL`.
+7. Backend verifies the documented `x-paga-hash-v3` signature, persists the event, and acknowledges it. The worker deduplicates the event, checks the exact amount and queries the Subsidiary Account balance.
+8. Only a valid callback plus matching account balance can move the payment through `PAYMENT_RECEIVED` to `FUNDS_SECURED` in the configured approved mode.
+9. Only then does the transaction become `FUNDED` and start the 72-hour dispatch deadline.
+
+If account creation times out, the same account and request references are reconciled. A new account reference is not generated for an ambiguous operation. If the callback amount differs or the account balance cannot be confirmed, the payment does not become funded.
+
+## 5. Payout and refund flow
+
+The current Paga adapter uses the transaction-specific Subsidiary Account as the source of held funds.
+
+1. A financial instruction is created under the SupplyKey financial rules. `PENDING_APPROVAL` instructions do not move funds.
+2. Once queued, the worker charges the transaction Subsidiary Account using a stable instruction-derived reference. Paga documents this operation as moving funds to the business balance.
+3. The worker submits a bank transfer using the Paga Business API `depositToBank` operation and a separate stable reference. Bank destinations must first be validated through Paga.
+4. A successful submission response is not treated as final settlement. The instruction remains `SUBMITTED` until a verified Paga callback confirms a settled transfer or a status query resolves it.
+5. Timeout, duplicate-reference and ambiguous response codes are not treated as failure or success. The original reference is queried; no new reference is generated.
+6. Only confirmed settlement posts the final ledger journal and releases the corresponding lot freeze.
+
+The bank-transfer path requires a verified and encrypted bank destination for the payout recipient. Refunds to a buyer use the buyer's verified bank destination. Fee treatment and production refund policy remain subject to the relevant Open Decisions.
+
+## 6. Callback security and recovery
+
+- Collect API requests use HTTP Basic authentication plus a SHA-512 `hash` header.
+- Subsidiary Account funding callbacks are verified using Paga's `x-paga-hash-v3` scheme and the documented field order.
+- Business API payout callbacks are verified using Paga's `x-paga-hash` scheme and the documented field order.
+- Callback event identifiers and instruction references are deduplicated before state changes.
+- Raw provider events are append-only. Processing outcomes are recorded separately.
+- A provider timeout, duplicate reference or unknown response is not retried with a new reference.
+- The worker queries the original reference and records unresolved cases as `UNKNOWN` for reconciliation. After a definitive bank-transfer failure, it tops the amount back up into the source Subsidiary Account and verifies the restored balance before marking the instruction failed.
+- Paga documents `responseCode` values `3` as pending and `-1`, `105`, `135` as unknown outcomes requiring status checks. Other codes must be mapped using the current Paga error-code reference.
+
+## 7. Local simulator
+
+The `SimulatedPaymentProvider` remains available for development without Paga credentials. It supports reproducible success, failure, delay, duplicate, timeout and unknown scenarios. All simulator responses are labelled `SIMULATED`; they never represent real money movement.
+
+Paga Sandbox is a separate provider mode. It uses Paga's simulated-money environment and must be labelled `PAGA_SANDBOX`. A successful Sandbox run is not evidence of live custody approval or production readiness.
+
+## 8. Real-money launch gates
 
 | # | Gate | Evidence required |
 |---|---|---|
-| G1 | Provider confirms every row of section 2 in writing, or an alternative provider is cleared | Signed confirmation or contract annex |
-| G2 | Qualified Nigerian counsel approves the fund-holding model, the holding entity, licensing or partner requirements, KYC/AML duties, dispute liability and customer-facing claims | Written opinion |
-| G3 | Reconciliation clean in the provider sandbox for 14 consecutive days | Job reports |
-| G4 | All P0 tests pass; restore drill passed; security review done | Test and review reports |
-| G5 | Moderator training and SLA agreed | Ops sign-off |
-| G6 | Product owner has settled every decision marked "Launch" in [Open Decisions](../06-delivery/OPEN_DECISIONS.md) | Updated register |
+| G1 | Paga confirms in writing that the Subsidiary Account and payout arrangement may be used for SupplyKey's conditional marketplace settlement model | Written Paga approval or contract annex describing custody, release controls, account ownership, fees, limits and liability |
+| G2 | Qualified Nigerian counsel approves the fund-holding model, holding entity, licensing or partner requirements, KYC/AML duties, dispute liability and customer-facing claims | Written legal opinion |
+| G3 | Paga Sandbox collection, account balance, payout, refund, duplicate callback, timeout and daily business/subsidiary history reconciliation scenarios pass against actual Paga Sandbox credentials | Provider test evidence and reconciliation reports |
+| G4 | Reconciliation is clean for 14 consecutive days | Job reports and matched provider statements |
+| G5 | All P0 acceptance tests pass; PostgreSQL restore drill and security review pass | Test, restore and review reports |
+| G6 | Moderator training and service levels are agreed | Operations sign-off |
+| G7 | All product decisions marked Launch are resolved | Updated Open Decisions register |
 
-If the provider cannot support the arrangement, evaluate a licensed holding or escrow partner, or revise the product promise, before accepting real money.
+If Paga does not approve this use case, evaluate a licensed escrow/holding partner or revise the product promise before accepting real money.
 
-## 7. Related documents
+## 9. Related documents
 
 [Financial Engine](../03-technical-specs/FINANCIAL_ENGINE.md) · [Component Design](../02-architecture/COMPONENT_DESIGN.md) · [Open Decisions](../06-delivery/OPEN_DECISIONS.md)
