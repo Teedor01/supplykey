@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import { api } from '../src/lib/api.js';
 import { TX_STATES, ITEM_STATES, PAYMENT_STATES, LOT_MONEY_STATES, INSTRUCTION_STATES, money } from '../src/lib/constants.js';
 
-assert.deepEqual(TX_STATES, ['DRAFT','AWAITING_BUYER_AGREEMENT','AWAITING_PAYMENT','FUNDED','COMPLETED','CANCELLED','EXPIRED']);
+assert.deepEqual(TX_STATES, ['DRAFT','AWAITING_BUYER_AGREEMENT','AWAITING_PAYMENT','FUNDED','SETTLEMENT_PENDING','COMPLETED','CANCELLED','EXPIRED']);
 assert.ok(ITEM_STATES.includes('RETURN_HANDOVER_RECORDED'));
 assert.ok(PAYMENT_STATES.includes('PAYMENT_RECEIVED'));
 assert.ok(LOT_MONEY_STATES.includes('REFUND_PENDING'));
