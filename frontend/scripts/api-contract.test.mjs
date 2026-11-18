@@ -71,7 +71,7 @@ test('all API endpoint families resolve to exactly one /api/v1 prefix', () => {
     '/auth/refresh', '/auth/logout', '/me', '/me/profile', '/me/payout-account',
     '/transactions', '/transactions/tx_1', '/transactions/tx_1/payments',
     '/transactions/tx_1/dispatch', '/transactions/tx_1/delivery/evidence',
-    '/evidence/upload-urls', '/evidence/ev_1/complete', '/disputes/dis_1',
+    '/evidence/upload-urls', '/evidence/ev_1/complete', '/evidence/ev_1/content', '/disputes/dis_1',
     '/mod/disputes', '/mod/acceptance-queue', '/notifications',
     '/admin/audit', '/admin/config/key', '/worker/run-deadlines'
   ];
