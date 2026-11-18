@@ -32,7 +32,7 @@ const file = new File(['SupplyKey evidence'], 'evidence.jpg', {type:'image/jpeg'
 const upload = await api.upload(file, 'OTHER', 'tx_a210');
 assert.equal(upload.status, 'VERIFIED');
 api.switchRole('SUPPLIER');
-const dispatchEvidence = await api.upload(file, 'DISPATCH', 'tx_7f42');
+const dispatchEvidence = await api.upload(file, 'DISPATCH_PROOF', 'tx_7f42');
 await api.action('/transactions/tx_7f42/dispatch', {lines:[{item_id:'it_4',quantity:1}],courier_name:'Demo Courier',rider_name:'Demo Rider',rider_phone:'+2348000000000',evidence_ids:[dispatchEvidence.id]});
 const dispatched = await api.transaction('tx_7f42');
 assert.equal(dispatched.status, 'FUNDED', 'dispatch must not replace the canonical transaction status');
