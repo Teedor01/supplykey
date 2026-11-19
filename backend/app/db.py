@@ -1,7 +1,8 @@
 from . import config as _config  # Load backend/.env before creating the database engine.
 import os
+import json
 from datetime import datetime, timezone
-from sqlalchemy import create_engine, String, Integer, BigInteger, DateTime, JSON, Text, ForeignKey, UniqueConstraint, Index, text, inspect
+from sqlalchemy import create_engine, String, Integer, BigInteger, DateTime, JSON, Text, ForeignKey, UniqueConstraint, Index, CheckConstraint, text, inspect
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, sessionmaker
 
 DATABASE_URL = os.getenv('DATABASE_URL', 'sqlite:///./supplykey.db')
@@ -88,9 +89,12 @@ class Evidence(Base):
     created_at: Mapped[datetime]=mapped_column(DateTime(timezone=True), default=now)
 class Instruction(Base):
     __tablename__='financial_instructions'
+    __table_args__=(CheckConstraint("(instruction_type <> 'REFUND' AND refund_classification IS NULL) OR (instruction_type = 'REFUND' AND refund_classification IN ('EXCESS_PAYMENT','DISPUTE_RETURN'))",name='financial_instructions_refund_classification_check'),)
     id: Mapped[str]=mapped_column(String(36), primary_key=True)
     transaction_id: Mapped[str]=mapped_column(ForeignKey('transactions.id'), index=True)
     instruction_type: Mapped[str]=mapped_column(String(12))
+    refund_classification: Mapped[str|None]=mapped_column(String(32),nullable=True,index=True)
+    retry_of_id: Mapped[str|None]=mapped_column(String(36),nullable=True,unique=True,index=True)
     amount_kobo: Mapped[int]=mapped_column(BigInteger)
     status: Mapped[str]=mapped_column(String(32), index=True)
     origin_id: Mapped[str]=mapped_column(String(36))
@@ -145,11 +149,23 @@ def init_db():
                 'provider_stage':'VARCHAR(32)',
                 'provider_response':'JSON',
                 'resolved':'BOOLEAN NOT NULL DEFAULT 0',
+                'refund_classification':'VARCHAR(32)',
+                'retry_of_id':'VARCHAR(36)',
             }
             with engine.begin() as connection:
                 for name,definition in additions.items():
                     if name not in existing:
                         connection.exec_driver_sql(f'ALTER TABLE financial_instructions ADD COLUMN {name} {definition}')
+                legacy=connection.exec_driver_sql("SELECT id, provider_response FROM financial_instructions WHERE instruction_type='REFUND' AND refund_classification IS NULL").fetchall()
+                for instruction_id, provider_response in legacy:
+                    try:
+                        response=provider_response if isinstance(provider_response,dict) else json.loads(provider_response or '{}')
+                    except (TypeError,ValueError):
+                        response={}
+                    classification='EXCESS_PAYMENT' if response.get('origin_type')=='PAGA_OVERPAYMENT' else 'DISPUTE_RETURN'
+                    connection.exec_driver_sql('UPDATE financial_instructions SET refund_classification=? WHERE id=?',(classification,instruction_id))
+                connection.exec_driver_sql('CREATE INDEX IF NOT EXISTS ix_financial_instructions_refund_classification ON financial_instructions(refund_classification)')
+                connection.exec_driver_sql('CREATE UNIQUE INDEX IF NOT EXISTS ix_financial_instructions_retry_of_id ON financial_instructions(retry_of_id) WHERE retry_of_id IS NOT NULL')
         return
     raise RuntimeError('Unsupported DATABASE_URL. Use PostgreSQL or SQLite development mode.')
 class Journal(Base):

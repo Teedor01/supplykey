@@ -54,7 +54,26 @@ def test_end_to_end_simulated_funding_and_dispatch():
         assert sum(x['amount_kobo'] for x in rows if x['direction']=='DEBIT')==sum(x['amount_kobo'] for x in rows if x['direction']=='CREDIT')
     evidence=upload(supplier,txid,'DISPATCH_PROOF')
     r=client.post(f'/api/v1/transactions/{txid}/dispatch',headers=supplier,json={'lines':[{'item_id':tx['items'][0]['id'],'quantity':2}],'courier_name':'Demo Courier','rider_name':'Demo Rider','rider_phone':'+2348000000000','evidence_ids':[evidence]});assert r.status_code==200,r.text
-    assert client.get(f'/api/v1/transactions/{txid}',headers=buyer).json()['lots'][0]['item_status']=='DISPATCHED'
+    assert r.json()['data']['transaction']['lots'][0]['item_status']=='DISPATCHED'
+    assert r.json()['data']['transaction']['dispatches'][-1]['evidence_ids']==[evidence]
+    buyer_tx=client.get(f'/api/v1/transactions/{txid}',headers=buyer).json()
+    assert buyer_tx['lots'][0]['item_status']=='DISPATCHED'
+    assert buyer_tx['items'][0]['id']==buyer_tx['lots'][0]['item_id']
+    assert 'confirm_received' in buyer_tx['allowed_actions']
+    # Empty and malformed receipt requests must fail without mutating the aggregate.
+    empty=client.post(f'/api/v1/transactions/{txid}/delivery/confirm-received',headers=buyer,json={'lines':[]})
+    assert empty.status_code==422 and empty.json()['error']['code']=='RECEIPT_LINES_REQUIRED'
+    invalid=client.post(f'/api/v1/transactions/{txid}/delivery/confirm-received',headers=buyer,json={'lines':[{'item_id':'missing-item','quantity':1}]})
+    assert invalid.status_code==404 and invalid.json()['error']['code']=='ITEM_NOT_FOUND'
+    excessive=client.post(f'/api/v1/transactions/{txid}/delivery/confirm-received',headers=buyer,json={'lines':[{'item_id':buyer_tx['items'][0]['id'],'quantity':3}]})
+    assert excessive.status_code==422 and excessive.json()['error']['code']=='QUANTITY_EXCEEDS_AVAILABLE'
+    receipt=client.post(f'/api/v1/transactions/{txid}/delivery/confirm-received',headers=buyer,json={'lines':[{'item_id':buyer_tx['items'][0]['id'],'quantity':1}]})
+    assert receipt.status_code==200,receipt.text
+    refreshed=client.get(f'/api/v1/transactions/{txid}',headers=buyer).json()
+    assert sorted((lot['item_status'],lot['quantity']) for lot in refreshed['lots'])==[('DISPATCHED',1),('RECEIPT_CONFIRMED',1)]
+    # Reconfirming the already received unit is rejected and does not duplicate receipt.
+    duplicate=client.post(f'/api/v1/transactions/{txid}/delivery/confirm-received',headers=buyer,json={'lines':[{'item_id':buyer_tx['items'][0]['id'],'quantity':2}]})
+    assert duplicate.status_code==422 and duplicate.json()['error']['code']=='QUANTITY_EXCEEDS_AVAILABLE'
 
 def test_idempotency_rejects_changed_body():
     supplier=register('Supplier Two','supplier2@testsupply.ng')
@@ -144,7 +163,7 @@ def test_partial_receipt_acceptance_and_independent_financial_approval(monkeypat
         assert client.post('/api/v1/webhooks/payments/simulated',content=payload,headers={'X-Sim-Signature':sig}).status_code==200
     tx=client.get(f'/api/v1/transactions/{tid}',headers=supplier).json();iid=tx['items'][0]['id']
     dispatch_proof=upload(supplier,tid,'DISPATCH_PROOF')
-    assert client.post(f'/api/v1/transactions/{tid}/dispatch',headers=supplier,json={'lines':[{'item_id':iid,'quantity':2}],'evidence_ids':[dispatch_proof]}).status_code==200
+    assert client.post(f'/api/v1/transactions/{tid}/dispatch',headers=supplier,json={'lines':[{'item_id':iid,'quantity':2}],'courier_name':'Demo Courier','rider_name':'Demo Rider','rider_phone':'+2348000000000','evidence_ids':[dispatch_proof]}).status_code==200
     tx=client.get(f'/api/v1/transactions/{tid}',headers=buyer).json()
     receipt=client.post(f'/api/v1/transactions/{tid}/delivery/confirm-received',headers=buyer,json={'lines':[{'item_id':iid,'quantity':1}]});assert receipt.status_code==200,receipt.text
     tx=client.get(f'/api/v1/transactions/{tid}',headers=buyer).json()
@@ -161,6 +180,8 @@ def test_partial_receipt_acceptance_and_independent_financial_approval(monkeypat
         assert client.post(f'/api/v1/transactions/{tid}/delivery/evidence',headers=buyer,json={'requirement_id':req['id'],'evidence_ids':[buyer_photo]}).status_code==200
     accept_proof=upload(buyer,tid,'ACCEPTANCE_PROOF');reject_proof=upload(buyer,tid,'REJECTION_PROOF')
     condition_id=tx['items'][0]['conditions'][0]['id']
+    wrong_purpose=client.post(f'/api/v1/transactions/{tid}/decisions',headers=buyer,json={'lines':[{'item_id':iid,'quantity_submitted':1,'quantity_accepted':1,'quantity_rejected':0,'accept_evidence_ids':[reject_proof]}]})
+    assert wrong_purpose.status_code==422 and wrong_purpose.json()['error']['code']=='EVIDENCE_PURPOSE_MISMATCH'
     submitted=client.post(f'/api/v1/transactions/{tid}/decisions',headers=buyer,json={'lines':[{'item_id':iid,'quantity_submitted':2,'quantity_accepted':1,'quantity_rejected':1,'accept_evidence_ids':[accept_proof],'reject':{'agreed_condition_ids':[condition_id],'reason_text':'The returned unit is damaged and does not meet the agreed specification.','evidence_ids':[reject_proof]}}]});assert submitted.status_code==200,submitted.text
     did=submitted.json()['data']['decisions'][0]['id']
     assert client.post(f'/api/v1/decisions/{did}/waive-window',headers=buyer).status_code==200
@@ -174,7 +195,7 @@ def test_partial_receipt_acceptance_and_independent_financial_approval(monkeypat
     assert decision.status_code==200,decision.text
     payout=decision.json()['data']['payout'];assert payout['amount_kobo']==50000000 and payout['status']=='PENDING_APPROVAL'
     assert client.post(f"/api/v1/mod/payouts/{payout['id']}/approve",headers=senior,json={}).json()['status']=='QUEUED'
-    ledger=client.get(f'/api/v1/transactions/{tid}/ledger',headers=buyer).json()['data']
+    ledger=client.get(f'/api/v1/transactions/{tid}/ledger',headers=supplier).json()['data']
     assert any(x['entry_type']=='RELEASE_AUTHORIZED' for x in ledger)
     assert all(sum(x['amount_kobo'] for x in ledger if x['journal_id']==jid and x['direction']=='DEBIT')==sum(x['amount_kobo'] for x in ledger if x['journal_id']==jid and x['direction']=='CREDIT') for jid in {x['journal_id'] for x in ledger})
     monkeypatch.setenv('SIMULATED_INSTRUCTION_SCENARIO','SUCCESS')
@@ -183,7 +204,7 @@ def test_partial_receipt_acceptance_and_independent_financial_approval(monkeypat
     assert any(x['id']==payout['id'] and x['status']=='SUCCEEDED' for x in result['processed'])
     final=client.get(f'/api/v1/transactions/{tid}',headers=buyer).json()
     assert any(l['item_status']=='SETTLED_RELEASED' and l['money_status']=='RELEASED' for l in final['lots'])
-    final_ledger=client.get(f'/api/v1/transactions/{tid}/ledger',headers=buyer).json()['data']
+    final_ledger=client.get(f'/api/v1/transactions/{tid}/ledger',headers=supplier).json()['data']
     assert any(x['entry_type']=='PAYOUT_SENT' for x in final_ledger)
     # Rejected quantity remains held until handover and supplier-confirmed return receipt.
     opened=client.post(f'/api/v1/transactions/{tid}/returns',headers=buyer,json={'lines':[{'item_id':iid,'quantity':1}]});assert opened.status_code==200,opened.text
@@ -234,7 +255,14 @@ def test_paga_sandbox_collection_webhook_and_balance_reconciliation(monkeypatch)
     pdata=payment.json()['data']
     assert pdata['mode']=='PAGA_SANDBOX'
     assert pdata['checkout']['account_number']=='0750529406'
-    assert client.get(f'/api/v1/transactions/{tid}',headers=buyer).json()['status']=='AWAITING_PAYMENT'
+    buyer_view=client.get(f'/api/v1/transactions/{tid}',headers=buyer).json()
+    assert buyer_view['status']=='AWAITING_PAYMENT'
+    assert buyer_view['payments'][-1]['checkout']['account_number']=='0750529406'
+    supplier_view=client.get(f'/api/v1/transactions/{tid}',headers=supplier).json()
+    supplier_checkout=supplier_view['payments'][-1]['checkout']
+    assert 'account_number' not in supplier_checkout
+    assert 'account_name' not in supplier_checkout
+    assert 'account_reference' not in supplier_checkout
 
     paga=PagaClient()
     transaction_date='2026-11-16T12:00:00.000'
@@ -491,3 +519,116 @@ def test_admin_audit_requires_valid_admin_bearer_token():
     token=verified.json()['access_token']
     audit=c.get('/api/v1/admin/audit',headers={'Authorization':'Bearer '+token})
     assert audit.status_code==200 and 'data' in audit.json()
+
+
+def test_paga_balance_refresh_recovers_payment_when_funding_callback_is_missing(monkeypatch):
+    from app.providers.paga import PagaClient
+
+    monkeypatch.setenv('PAYMENT_PROVIDER','paga')
+    monkeypatch.setenv('PAGA_MODE','sandbox')
+    monkeypatch.setenv('PAGA_PUBLIC_KEY','sandbox-public')
+    monkeypatch.setenv('PAGA_SECRET_KEY','sandbox-secret')
+    monkeypatch.setenv('PAGA_HASH_KEY','sandbox-hash')
+    monkeypatch.setenv('PAGA_CALLBACK_URL','https://api.example.test/api/v1/webhooks/paga/subsidiary-account')
+    monkeypatch.setenv('PAGA_BUSINESS_NAME','SupplyKey Sandbox')
+
+    supplier=register('Polling Supplier','polling-supplier@testsupply.ng')
+    buyer=register('Polling Buyer','polling-buyer@testsupply.ng')
+    body={'buyer_contact':{'email':'polling-buyer@testsupply.ng'},'delivery':{'destination_state':'Rivers','city':'Port Harcourt','expected_within_days':3,'delivery_fee_kobo':0},'items':[{'description':'Polling test item','specification':'model P','condition':'new','quantity':1,'unit_price_kobo':100000,'conditions':[{'code':'SPEC','kind':'REJECTION','text':'Must match model P'}]}]}
+    created=client.post('/api/v1/transactions',headers=supplier,json=body)
+    assert created.status_code==201,created.text
+    tid=created.json()['data']['id']
+    invitation=client.post(f'/api/v1/transactions/{tid}/send',headers=supplier).json()['invitation_token']
+    assert client.post(f'/api/v1/invitations/{invitation}/accept',headers=buyer).status_code==200
+    agreement=client.get(f'/api/v1/transactions/{tid}/agreement',headers=buyer).json()['current_version']
+    assert client.post(f'/api/v1/transactions/{tid}/agreement/confirm',headers=buyer,json={'agreement_version_id':agreement['id'],'content_hash':agreement['content_hash']}).status_code==200
+
+    monkeypatch.setattr(PagaClient,'create_transaction_account',lambda self,**kwargs:{'statusCode':'0','accountNumber':'0750529417','accountName':'Polling Buyer'})
+    payment=client.post(f'/api/v1/transactions/{tid}/payments',headers={**buyer,'Idempotency-Key':'paga-polling-recovery'},json={})
+    assert payment.status_code==200,payment.text
+    payment_id=payment.json()['data']['payment_id']
+
+    # Simulate a successful deposit whose Paga webhook was never delivered.
+    monkeypatch.setattr(PagaClient,'get_subsidiary_balance',lambda self,account_reference,reference:{'statusCode':'0','balance':'1000.00','accountReference':account_reference})
+    refreshed=client.post(f'/api/v1/transactions/{tid}/payments/{payment_id}/refresh',headers=buyer,json={})
+    assert refreshed.status_code==200,refreshed.text
+    assert refreshed.json()['status']=='FUNDS_SECURED'
+    final=client.get(f'/api/v1/transactions/{tid}',headers=buyer).json()
+    assert final['status']=='FUNDED'
+    assert final['payments'][-1]['status']=='FUNDS_SECURED'
+
+
+def test_paga_overpayment_secures_agreed_amount_and_queues_excess_for_moderator(monkeypatch):
+    from app.providers.paga import PagaClient
+    from app.db import Instruction, Journal
+
+    monkeypatch.setenv('PAYMENT_PROVIDER','paga')
+    monkeypatch.setenv('PAGA_MODE','sandbox')
+    monkeypatch.setenv('PAGA_PUBLIC_KEY','sandbox-public')
+    monkeypatch.setenv('PAGA_SECRET_KEY','sandbox-secret')
+    monkeypatch.setenv('PAGA_HASH_KEY','sandbox-hash')
+    monkeypatch.setenv('PAGA_CALLBACK_URL','https://api.example.test/api/v1/webhooks/paga/subsidiary-account')
+    monkeypatch.setenv('PAGA_BUSINESS_NAME','SupplyKey Sandbox')
+
+    supplier=register('Overpay Supplier','overpay-supplier@testsupply.ng')
+    buyer=register('Overpay Buyer','overpay-buyer@testsupply.ng')
+    moderator=register('Overpay Senior Moderator','overpay-moderator@testsupply.ng')
+    moderator_session=SessionLocal()
+    try:
+        moderator_user=moderator_session.scalar(select(User).where(User.email=='overpay-moderator@testsupply.ng'))
+        moderator_user.role='SENIOR_MODERATOR';moderator_session.commit()
+    finally:
+        moderator_session.close()
+    body={'buyer_contact':{'email':'overpay-buyer@testsupply.ng'},'delivery':{'destination_state':'Rivers','city':'Port Harcourt','expected_within_days':3,'delivery_fee_kobo':0},'items':[{'description':'Overpay test item','specification':'model O','condition':'new','quantity':1,'unit_price_kobo':100000,'conditions':[{'code':'SPEC','kind':'REJECTION','text':'Must match model O'}]}]}
+    created=client.post('/api/v1/transactions',headers=supplier,json=body);assert created.status_code==201,created.text
+    tid=created.json()['data']['id']
+    invitation=client.post(f'/api/v1/transactions/{tid}/send',headers=supplier).json()['invitation_token']
+    assert client.post(f'/api/v1/invitations/{invitation}/accept',headers=buyer).status_code==200
+    agreement=client.get(f'/api/v1/transactions/{tid}/agreement',headers=buyer).json()['current_version']
+    assert client.post(f'/api/v1/transactions/{tid}/agreement/confirm',headers=buyer,json={'agreement_version_id':agreement['id'],'content_hash':agreement['content_hash']}).status_code==200
+    monkeypatch.setattr(PagaClient,'create_transaction_account',lambda self,**kwargs:{'statusCode':'0','accountNumber':'0750529499','accountName':'Overpay Buyer'})
+    started=client.post(f'/api/v1/transactions/{tid}/payments',headers={**buyer,'Idempotency-Key':'paga-overpayment-test'},json={})
+    assert started.status_code==200,started.text
+    payment_id=started.json()['data']['payment_id']
+    # Existing overpayment attempts may already be UNKNOWN under the old behaviour.
+    session=SessionLocal()
+    try:
+        session.get(Payment,payment_id).status='UNKNOWN';session.commit()
+    finally:
+        session.close()
+    monkeypatch.setattr(PagaClient,'get_subsidiary_balance',lambda self,account_reference,reference:{'statusCode':'0','balance':'1,200.00','accountReference':account_reference})
+    refreshed=client.post(f'/api/v1/transactions/{tid}/payments/{payment_id}/refresh',headers=buyer,json={})
+    assert refreshed.status_code==200,refreshed.text
+    assert refreshed.json()['status']=='FUNDS_SECURED'
+    tx=client.get(f'/api/v1/transactions/{tid}',headers=buyer).json()
+    assert tx['status']=='FUNDED'
+    payment=tx['payments'][-1]
+    assert payment['status']=='FUNDS_SECURED'
+    assert payment['checkout']['overpayment_kobo']==20000
+    assert payment['checkout']['overpayment_refund_status']=='PENDING_MODERATOR_APPROVAL'
+    assert client.get('/api/v1/mod/financial-approvals',headers=moderator).status_code==200
+    approvals=client.get('/api/v1/mod/financial-approvals',headers=moderator).json()['data']
+    refund=next(x for x in approvals if x.get('origin_type')=='PAGA_OVERPAYMENT' and x['transaction_id']==tid)
+    assert refund['amount_kobo']==20000 and refund['status']=='PENDING_APPROVAL'
+    approved=client.post(f"/api/v1/mod/refunds/{refund['id']}/approve",headers=moderator,json={})
+    assert approved.status_code==200,approved.text
+    s=SessionLocal()
+    try:
+        instruction=s.get(Instruction,refund['id'])
+        assert instruction.status=='QUEUED'
+        overpayment_journals=s.scalars(select(Journal).where(Journal.reference_id==refund['id'])).all()
+        assert [journal.entry_type for journal in overpayment_journals]==['OVERPAYMENT_RECEIVED']
+    finally:
+        s.close()
+
+
+def test_buyer_receipt_action_permission_requires_dispatched_lots():
+    from types import SimpleNamespace
+    from app.main import allowed_actions
+    buyer=SimpleNamespace(id='buyer-1')
+    tx=SimpleNamespace(id='tx-1',supplier_id='supplier-1',buyer_id='buyer-1',status='FUNDED',data={'lots':[{'item_id':'item-1','quantity':2,'item_status':'AWAITING_DISPATCH'}]})
+    assert 'confirm_received' not in allowed_actions(tx,buyer)
+    tx.data={'lots':[{'item_id':'item-1','quantity':2,'item_status':'DISPATCHED'}]}
+    assert 'confirm_received' in allowed_actions(tx,buyer)
+    tx.data={'lots':[{'item_id':'item-1','quantity':0,'item_status':'DISPATCHED'}]}
+    assert 'confirm_received' not in allowed_actions(tx,buyer)

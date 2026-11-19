@@ -382,3 +382,17 @@ class TestConcurrentCallbacks:
             assert (payment_status, tx_status) in [('FUNDS_SECURED', 'FUNDED'), ('FAILED', 'AWAITING_PAYMENT')]
             winners = [r for r in results if r.status_code == 200 and r.json().get('processed')]
             assert len(winners) == 1
+
+
+def test_paga_amount_parser_accepts_provider_formatted_ngn_amounts():
+    from app.main import paga_amount_to_kobo
+    assert paga_amount_to_kobo('1,000.00') == 100000
+    assert paga_amount_to_kobo('500,000.00') == 50000000
+    assert paga_amount_to_kobo(1250.5) == 125050
+
+
+@pytest.mark.parametrize('value', [None, '', 'not-money', '-1.00', True])
+def test_paga_amount_parser_rejects_invalid_values(value):
+    from app.main import paga_amount_to_kobo
+    with pytest.raises((ValueError, ArithmeticError)):
+        paga_amount_to_kobo(value)
