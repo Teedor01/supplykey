@@ -95,9 +95,11 @@ stateDiagram-v2
   AWAITING_EVIDENCE --> MODERATOR_REVIEW: evidence received or due date passed
   MODERATOR_REVIEW --> ON_HOLD: moderator holds with reason
   ON_HOLD --> MODERATOR_REVIEW: moderator resumes
-  MODERATOR_REVIEW --> AWAITING_SECOND_APPROVAL: decision recorded, instruction PENDING_APPROVAL
-  MODERATOR_REVIEW --> DECIDED: decision recorded, instruction QUEUED or none
-  AWAITING_SECOND_APPROVAL --> DECIDED: different senior moderator approves instruction
+  MODERATOR_REVIEW --> RETURN_PENDING: moderator orders return and refund
+  RETURN_PENDING --> RETURN_RECEIPT_CONFIRMED: supplier confirms physical receipt with evidence
+  RETURN_RECEIPT_CONFIRMED --> REFUND_PROCESSING: assigned moderator authorizes refund
+  MODERATOR_REVIEW --> REFUND_PROCESSING: moderator authorizes no-return refund
+  REFUND_PROCESSING --> RESOLVED: provider confirms successful refund
   AWAITING_SECOND_APPROVAL --> MODERATOR_REVIEW: instruction declined, new decision needed
   DECIDED --> CLOSED: all authorised instructions SUCCEEDED and dispute freezes released
   CLOSED --> [*]

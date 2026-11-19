@@ -17,6 +17,10 @@ export function buildModeratorActionRequest({ caseItem, detail, action, fields =
   if (isDispute && action === 'authorize_refund') {
     path = `/mod/disputes/${caseItem.id}/authorize-refund`;
     body = {};
+  } else if (isDispute && action === 'retry_refund') {
+    if (!fields.refundInstructionId) throw new Error('Select a failed dispute refund instruction.');
+    path = `/mod/financial-exceptions/${fields.refundInstructionId}/resolve`;
+    body = { action: 'RETRY', reason: fields.reason };
   } else if (isDispute && action === 'decision') {
     const outcome = fields.outcome || 'NO_FINANCIAL_ACTION';
     const affected = caseItem.affected_lots?.length ? caseItem.affected_lots : [{item_id:caseItem.item_id,lot_id:caseItem.lot_id,quantity:Number(fields.quantity || caseItem.quantity || 1)}];

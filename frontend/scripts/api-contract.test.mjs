@@ -35,7 +35,7 @@ test('dispatch is rejected until the transaction is backend-confirmed funded', a
   );
 });
 
-test('high-value moderator decision requires a different senior moderator and never claims settlement', async () => {
+test('high-value acceptance payout requires senior approval and never claims settlement', async () => {
   api.switchRole('MODERATOR');
   const result = await api.action('/mod/decisions/dec_1/confirm', {
     reason: 'The agreed specifications and submitted evidence have been reviewed. The accepted quantity satisfies the recorded agreement conditions.',

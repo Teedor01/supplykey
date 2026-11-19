@@ -4,7 +4,7 @@ import { api } from '../src/lib/api.js';
 
 const file = (name='evidence.jpg') => new File([new Uint8Array([1,2,3,4])], name, {type:'image/jpeg'});
 
-test('local demo follows rejection, moderator return order, buyer handover and supplier receipt without false settlement', async () => {
+test('local demo follows role-specific rejection, return receipt and single-moderator refund authorization without false settlement', async () => {
   api.reset();
   api.switchRole('BUYER');
   const txid='tx_b7c1';
@@ -23,7 +23,7 @@ test('local demo follows rejection, moderator return order, buyer handover and s
   api.switchRole('SUPPLIER');
   const supplierTx=await api.transaction(txid);
   assert.equal(supplierTx.dispute.id,did);
-  assert.match(supplierTx.dispute.reason,/not factory sealed/);
+  assert.equal(supplierTx.allowed_actions.includes('confirm_return_receipt'),false); // not available before a return is handed over
   api.switchRole('MODERATOR');
   const queue=await api.moderatorQueue({});
   assert.ok(queue.items.some(x=>x.id===did));
@@ -55,8 +55,8 @@ test('local demo follows rejection, moderator return order, buyer handover and s
   assert.equal(refunds.length,1);
   assert.equal(refunds[0].status,'PENDING_APPROVAL');
   assert.notEqual((await api.transaction(txid)).status,'COMPLETED');
-  api.switchRole('SENIOR_MODERATOR');
-  const approval=await api.action(`/mod/refunds/${receipt.refund.id}/approve`,{});
+  api.switchRole('MODERATOR');
+  const approval=await api.action(`/mod/disputes/${did}/authorize-refund`,{});
   assert.equal(approval.status,'QUEUED');
   assert.equal((await api.financialInstructions(txid,'refunds'))[0].status,'QUEUED');
   assert.notEqual((await api.transaction(txid)).status,'COMPLETED');

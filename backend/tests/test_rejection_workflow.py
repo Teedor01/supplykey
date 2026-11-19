@@ -136,7 +136,7 @@ def test_full_return_refund_requires_moderator_decision_supplier_receipt_and_pro
     ctx, item = _funded_and_delivered()
     buyer_proof, did = _reject(ctx, item)
     mod, mod_id = _staff('MODERATOR')
-    senior, _ = _staff('SENIOR_MODERATOR')
+    # A single assigned moderator owns the decision and refund authorization.
     # Buyer cannot open a return until the moderator explicitly orders it.
     early = client.post(f"/api/v1/transactions/{ctx['txid']}/returns", headers=ctx['buyer'], json={'lines': [{'item_id': item['id'], 'quantity': 1}]})
     assert early.status_code == 409 and early.json()['error']['code'] == 'RETURN_NOT_AUTHORIZED'
@@ -201,8 +201,15 @@ def test_full_return_refund_requires_moderator_decision_supplier_receipt_and_pro
     assert buyer_refunds[0]['amount_kobo'] == 1_000_000
     assert client.get(f"/api/v1/transactions/{ctx['txid']}", headers=ctx['buyer']).json()['status'] != 'COMPLETED'
     ins_id = buyer_refunds[0]['id']
-    approved = client.post(f'/api/v1/mod/refunds/{ins_id}/approve', headers=senior)
+    supplier_cannot_authorize = client.post(f'/api/v1/mod/disputes/{did}/authorize-refund', headers=ctx['supplier'])
+    assert supplier_cannot_authorize.status_code == 403
+    generic_second_approval = client.post(f'/api/v1/mod/refunds/{ins_id}/approve', headers=mod)
+    assert generic_second_approval.status_code == 409 and generic_second_approval.json()['error']['code'] == 'USE_DISPUTE_REFUND_AUTHORIZATION'
+    approved = client.post(f'/api/v1/mod/disputes/{did}/authorize-refund', headers=mod)
     assert approved.status_code == 200, approved.text
+    assert approved.json()['status'] == 'QUEUED'
+    duplicate_approval = client.post(f'/api/v1/mod/disputes/{did}/authorize-refund', headers=mod)
+    assert duplicate_approval.status_code == 200 and duplicate_approval.json()['instruction_id'] == ins_id
     # QUEUED is not settlement. A pending provider result cannot complete the transaction.
     monkeypatch.setenv('SIMULATED_INSTRUCTION_SCENARIO', 'PENDING')
     s = SessionLocal()
@@ -309,6 +316,22 @@ def test_failed_dispute_refund_never_completes_transaction(monkeypatch):
     assert tx['status'] != 'COMPLETED'
     assert tx['lots'][0]['is_frozen'] is True
     assert tx['settlement']['dispute_refund_status'] == 'FAILED'
+    # The same authorized moderator can retry a definitive dispute-refund failure;
+    # unknown provider outcomes still require reconciliation and cannot be retried.
+    retry = client.post(f'/api/v1/mod/financial-exceptions/{instruction_id}/resolve', headers=moderator,
+                        json={'action':'RETRY','reason':'Provider definitively rejected the refund; retry after reviewing the failed transfer.'})
+    assert retry.status_code == 200, retry.text
+    retry_id = retry.json()['instruction']['id']
+    assert retry.json()['status'] == 'QUEUED'
+    duplicate_retry = client.post(f'/api/v1/mod/financial-exceptions/{instruction_id}/resolve', headers=moderator,
+                                  json={'action':'RETRY','reason':'Replay the same retry safely without creating another transfer.'})
+    assert duplicate_retry.status_code == 200 and duplicate_retry.json()['instruction']['id'] == retry_id
+    monkeypatch.setenv('SIMULATED_INSTRUCTION_SCENARIO','SUCCESS')
+    with SessionLocal() as s:
+        run_financial(s)
+        assert s.get(Instruction,retry_id).status == 'SUCCEEDED'
+    final = client.get(f"/api/v1/transactions/{ctx['txid']}", headers=ctx['buyer']).json()
+    assert final['status'] == 'COMPLETED'
 
 
 def test_supplier_return_confirmation_deadline_escalates_without_assuming_receipt_or_refund():
@@ -366,71 +389,11 @@ def test_goods_rejection_moderator_must_select_a_resolving_outcome():
     assert response.status_code==422 and response.json()['error']['code']=='DISPUTE_OUTCOME_REQUIRED'
 
 
-def test_senior_declined_return_refund_reopens_moderation_without_erasing_supplier_receipt(monkeypatch):
-    ctx, item = _funded_and_delivered()
-    proof, did = _reject(ctx, item)
-    moderator, _ = _staff('MODERATOR')
-    senior, _ = _staff('SENIOR_MODERATOR')
-    _close_evidence_window(did, ctx['txid'])
-    detail = client.get(f'/api/v1/mod/disputes/{did}', headers=moderator).json()
-    lot = next(x for x in detail['transaction']['lots'] if x.get('is_frozen'))
-    decision = client.post(f'/api/v1/mod/disputes/{did}/decision', headers=moderator, json={
-        'reason':'The buyer must return the rejected goods before a refund can be transferred.',
-        'evidence_ids_considered':[proof],
-        'outcomes':[{'item_id':item['id'],'lot_id':lot['id'],'quantity':1,'outcome':'RETURN_AND_REFUND'}]
-    })
-    assert decision.status_code == 200, decision.text
-    opened = client.post(f"/api/v1/transactions/{ctx['txid']}/returns", headers=ctx['buyer'], json={
-        'lines':[{'lot_id':lot['id'],'item_id':item['id'],'quantity':1}]})
-    assert opened.status_code == 200, opened.text
-    rid=opened.json()['data']['id']
-    handover=upload(ctx['buyer'],ctx['txid'],'RETURN_HANDOVER')
-    assert client.post(f'/api/v1/returns/{rid}/handover-evidence',headers=ctx['buyer'],json={'evidence_ids':[handover]}).status_code==200
-    receipt_proof=upload(ctx['supplier'],ctx['txid'],'RETURN_RECEIPT')
-    receipt=client.post(f'/api/v1/returns/{rid}/confirm-receipt',headers=ctx['supplier'],json={
-        'lines':[{'lot_id':lot['id'],'item_id':item['id'],'quantity_received':1}], 'evidence_ids':[receipt_proof]})
-    assert receipt.status_code==200,receipt.text
-    old_refund_id=receipt.json()['refund']['id']
-    declined=client.post(f'/api/v1/mod/refunds/{old_refund_id}/decline',headers=senior,json={
-        'reason':'The senior reviewer rejects this authorization pending a fresh decision on the returned goods.'})
-    assert declined.status_code==200,declined.text
-    after_decline=client.get(f'/api/v1/transactions/{ctx["txid"]}',headers=ctx['supplier']).json()
-    assert after_decline['returns'][0]['status']=='RECEIPT_CONFIRMED'
-    assert after_decline['returns'][0]['supplier_receipt_confirmed_at']
-    assert after_decline['dispute']['decision'] is None
-    assert after_decline['dispute']['decision_history']
-    assert after_decline['dispute']['status']=='EVIDENCE_WINDOW_CLOSED_ELAPSED'
-    assert after_decline['lots'][0]['is_frozen'] is True
-    moderator_detail=client.get(f'/api/v1/mod/disputes/{did}',headers=moderator).json()
-    evidence_ids={x['id'] for x in moderator_detail['evidence']}
-    assert {proof,handover,receipt_proof} <= evidence_ids
-    new_decision=client.post(f'/api/v1/mod/disputes/{did}/decision',headers=moderator,json={
-        'reason':'The supplier receipt is confirmed; the buyer is entitled to a direct refund without a second return.',
-        'evidence_ids_considered':[proof,receipt_proof],
-        'outcomes':[{'item_id':item['id'],'lot_id':lot['id'],'quantity':1,'outcome':'REFUND'}]
-    })
-    assert new_decision.status_code==200,new_decision.text
-    new_refund_id=new_decision.json()['instructions'][0]['id']
-    assert new_refund_id!=old_refund_id
-    assert new_decision.json()['instructions'][0]['status']=='QUEUED'
-    monkeypatch.setenv('SIMULATED_INSTRUCTION_SCENARIO','SUCCESS')
-    s=SessionLocal()
-    try:
-        result=run_financial(s)
-        assert any(x['id']==new_refund_id and x['status']=='SUCCEEDED' for x in result['processed'])
-    finally:
-        s.close()
-    final=client.get(f"/api/v1/transactions/{ctx['txid']}",headers=ctx['buyer']).json()
-    assert final['status']=='COMPLETED'
-    assert final['dispute']['status']=='RESOLVED'
-
-
 def test_paga_missing_beneficiary_does_not_erase_supplier_receipt_and_requires_moderator_authorization(monkeypatch):
     from app import main as main_module
     ctx, item = _funded_and_delivered()
     proof, did = _reject(ctx, item)
     moderator, _ = _staff('MODERATOR')
-    senior, _ = _staff('SENIOR_MODERATOR')
     _close_evidence_window(did, ctx['txid'])
     detail=client.get(f'/api/v1/mod/disputes/{did}',headers=moderator).json()
     lot=next(x for x in detail['transaction']['lots'] if x.get('is_frozen'))
@@ -464,11 +427,11 @@ def test_paga_missing_beneficiary_does_not_erase_supplier_receipt_and_requires_m
     monkeypatch.setattr(main_module,'verified_destination_snapshot',lambda user:snapshot)
     authorized=client.post(f'/api/v1/mod/disputes/{did}/authorize-refund',headers=moderator)
     assert authorized.status_code==200,authorized.text
-    assert authorized.json()['status']=='PENDING_APPROVAL'
+    assert authorized.json()['status']=='QUEUED'
     ins_id=authorized.json()['instruction_id']
     with SessionLocal() as s:
         ins=s.get(Instruction,ins_id)
         assert ins.destination_snapshot==snapshot
-        assert ins.status=='PENDING_APPROVAL'
+        assert ins.status=='QUEUED'
     replay=client.post(f'/api/v1/mod/disputes/{did}/authorize-refund',headers=moderator)
-    assert replay.status_code==200 and replay.json()['instruction_id']==ins_id
+    assert replay.status_code==200 and replay.json()['instruction_id']==ins_id and replay.json()['status']=='QUEUED'

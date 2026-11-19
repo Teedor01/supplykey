@@ -1338,8 +1338,20 @@ def mod_authorize_return_refund(did:str,s:Session=Depends(db),u:User=Depends(cur
     if not ret:fail(409,'SUPPLIER_RECEIPT_REQUIRED','Supplier-confirmed physical receipt is required before refund authorization.')
     ins=create_return_refund_instruction(s,tx,d,ret,u)
     if not ins:fail(409,'VERIFIED_BENEFICIARY_REQUIRED','Buyer must verify a Paga beneficiary before the refund instruction can be authorized.')
-    save_tx(s,tx,d);audit(s,u,'DISPUTE_RETURN_REFUND_AUTHORIZED','INSTRUCTION',ins.id,{'dispute_id':did,'return_id':ret['id'],'amount_kobo':ins.amount_kobo,'destination_fingerprint':(ins.destination_snapshot or {}).get('destination_fingerprint')})
-    notify(s,tx.buyer_id,'REFUND_INSTRUCTION_CREATED',tx.id,{'instruction_id':ins.id,'status':ins.status});notify(s,tx.supplier_id,'DISPUTE_REFUND_AUTHORIZED',tx.id,{'instruction_id':ins.id,'status':ins.status});s.commit();return {'status':ins.status,'instruction_id':ins.id,'amount_kobo':ins.amount_kobo}
+    # This is the single moderator's explicit refund authorization. Queue the
+    # immutable instruction once; the existing financial worker hands it to Paga.
+    if ins.status == 'PENDING_APPROVAL':
+        ins.status='QUEUED'
+        post_journal(s,tx.id,'REFUND_AUTHORIZED',ins.id,[('HELD_FUNDS','DEBIT',ins.amount_kobo),('BUYER_REFUNDABLE','CREDIT',ins.amount_kobo)])
+    elif ins.status not in ['QUEUED','SUBMITTED','UNKNOWN','SUCCEEDED']:
+        fail(409,'REFUND_NOT_AUTHORIZABLE','The refund instruction is not in an authorizable state.')
+    ret['refund_eligibility_status']='QUEUED' if ins.status=='QUEUED' else ins.status
+    ret['refund_authorized_by']=u.id;ret['refund_authorized_at']=ret.get('refund_authorized_at') or iso()
+    disp.status='REFUND_PROCESSING' if ins.status in ['QUEUED','SUBMITTED','UNKNOWN'] else ('RESOLVED' if ins.status=='SUCCEEDED' else disp.status)
+    disp.data={**detail,'status':disp.status,'refund_authorized_by':u.id,'refund_authorized_at':ret['refund_authorized_at']}
+    d['dispute']={**d.get('dispute',{}),'status':disp.status,'refund_authorized_by':u.id,'refund_authorized_at':ret['refund_authorized_at']}
+    save_tx(s,tx,d);audit(s,u,'DISPUTE_RETURN_REFUND_AUTHORIZED','INSTRUCTION',ins.id,{'dispute_id':did,'return_id':ret['id'],'amount_kobo':ins.amount_kobo,'status':ins.status,'destination_fingerprint':(ins.destination_snapshot or {}).get('destination_fingerprint')})
+    notify(s,tx.buyer_id,'REFUND_INSTRUCTION_CREATED',tx.id,{'instruction_id':ins.id,'status':ins.status});notify(s,tx.supplier_id,'DISPUTE_REFUND_AUTHORIZED',tx.id,{'instruction_id':ins.id,'status':ins.status});s.commit();return {'status':ins.status,'instruction_id':ins.id,'amount_kobo':ins.amount_kobo,'authorized_by':u.id}
 
 @app.post('/api/v1/returns/{rid}/contest')
 def return_contest(rid:str,body:dict,s:Session=Depends(db),u:User=Depends(current_user)):
@@ -1546,13 +1558,13 @@ def dispute_decision(did:str,body:dict,request:Request,s:Session=Depends(db),u:U
         if prior_dispute_refund+refund_total>int(d.get('goods_total_kobo') or d.get('total_payable_kobo') or 0):fail(422,'REFUND_EXCEEDS_ELIGIBLE_AMOUNT','Dispute refund cannot exceed the agreed eligible amount.')
         destination=verified_destination_snapshot(s.get(User,tx.buyer_id))
         if os.getenv('PAYMENT_PROVIDER','simulated').lower()=='paga' and not destination:fail(409,'VERIFIED_BENEFICIARY_REQUIRED','Buyer must verify and confirm a Paga refund account before a dispute refund can be authorized.')
-        status='PENDING_APPROVAL' if refund_total>=threshold or (os.getenv('PAYMENT_PROVIDER','simulated').lower()=='paga' and not destination) else 'QUEUED';requires_second|=status=='PENDING_APPROVAL'
+        status='QUEUED'
         ins=Instruction(id=uid(),transaction_id=tx.id,instruction_type='REFUND',refund_classification='DISPUTE_RETURN',amount_kobo=refund_total,status=status,origin_id=did,deciding_moderator_id=u.id,idempotency_key='dispute:'+did+':decision:'+str(decision_revision)+':REFUND',destination_snapshot=destination);s.add(ins)
         if status=='QUEUED':post_journal(s,tx.id,'REFUND_AUTHORIZED',ins.id,[('HELD_FUNDS','DEBIT',refund_total),('BUYER_REFUNDABLE','CREDIT',refund_total)])
         instructions.append({'type':'REFUND','id':ins.id,'status':status,'amount_kobo':refund_total,'origin_type':'DISPUTE_DECISION'})
     for ret in d.get('returns',[]):
         if ret.get('status')=='CONTESTED':ret['status']='CLOSED';ret['closed_by_dispute_decision_at']=iso()
-    disp.status='AWAITING_SECOND_APPROVAL' if requires_second else ('RETURN_PENDING' if return_lots else 'DECIDED')
+    disp.status='RETURN_PENDING' if return_lots else ('REFUND_PROCESSING' if refund_total else 'DECIDED')
     disp.data={**disp.data,'status':disp.status,'decision_revision':decision_revision,'return_required':bool(return_lots),'decision':{'reason':body['reason'],'outcomes':body['outcomes'],'evidence_ids_considered':body['evidence_ids_considered'],'moderator_id':u.id,'created_at':iso()}}
     d['dispute']={**d.get('dispute',{}),'status':disp.status,'decision_revision':decision_revision,'return_required':bool(return_lots),'decision':disp.data.get('decision')}
     save_tx(s,tx,d,'FUNDED' if outcome_kinds.issubset({'REDISPATCH_OR_REPLACEMENT','NO_FINANCIAL_ACTION'}) else None);reconcile_transaction_completion(s,tx,d);audit(s,u,'DISPUTE_DECIDED','DISPUTE',did,{'instructions':instructions,'return_required':bool(return_lots),'return_lot_ids':[x['id'] for x in return_lots]});notify(s,tx.buyer_id,'DISPUTE_DECISION_RECORDED',tx.id,{'dispute_id':did,'status':disp.status,'return_required':bool(return_lots)});notify(s,tx.supplier_id,'DISPUTE_DECISION_RECORDED',tx.id,{'dispute_id':did,'status':disp.status,'return_required':bool(return_lots)});s.commit()
@@ -1561,9 +1573,12 @@ def dispute_decision(did:str,body:dict,request:Request,s:Session=Depends(db),u:U
 @app.post('/api/v1/mod/payouts/{iid}/approve')
 @app.post('/api/v1/mod/refunds/{iid}/approve')
 def approve_instruction(iid:str,s:Session=Depends(db),u:User=Depends(current_user)):
-    require_role(u,['SENIOR_MODERATOR']);ins=find_instruction(s,iid)
+    ins=find_instruction(s,iid)
+    if instruction_classification(ins)=='DISPUTE_RETURN':
+        fail(409,'USE_DISPUTE_REFUND_AUTHORIZATION','Dispute refunds are authorized by the assigned case moderator through the dispute authorization action.')
+    require_role(u,['SENIOR_MODERATOR'])
+    if ins.deciding_moderator_id==u.id:fail(403,'SELF_APPROVAL_NOT_ALLOWED','A different senior moderator must approve this financial instruction.')
     if ins.status!='PENDING_APPROVAL':fail(409,'INSTRUCTION_NOT_PENDING_APPROVAL','Instruction is not awaiting approval.')
-    if ins.deciding_moderator_id==u.id:fail(403,'SELF_APPROVAL_NOT_ALLOWED','A different senior moderator must approve.')
     tx=s.get(Aggregate,ins.transaction_id);ensure_no_unresolved_financial_exception(s,tx,exclude_id=ins.id)
     if ins.instruction_type=='PAYOUT':
         block_reason=instruction_execution_block_reason(ins,tx,tx_data(tx))
@@ -1590,9 +1605,12 @@ def approve_instruction(iid:str,s:Session=Depends(db),u:User=Depends(current_use
 @app.post('/api/v1/mod/payouts/{iid}/decline')
 @app.post('/api/v1/mod/refunds/{iid}/decline')
 def decline_instruction(iid:str,body:dict,s:Session=Depends(db),u:User=Depends(current_user)):
-    require_role(u,['SENIOR_MODERATOR']);ins=find_instruction(s,iid)
+    ins=find_instruction(s,iid)
+    if instruction_classification(ins)=='DISPUTE_RETURN':
+        fail(409,'USE_DISPUTE_REFUND_AUTHORIZATION','Dispute refunds are authorized by the assigned case moderator through the dispute authorization action.')
+    require_role(u,['SENIOR_MODERATOR'])
+    if ins.deciding_moderator_id==u.id:fail(403,'SELF_APPROVAL_NOT_ALLOWED','A different senior moderator must approve this financial instruction.')
     if ins.status!='PENDING_APPROVAL':fail(409,'INSTRUCTION_NOT_PENDING_APPROVAL','Instruction is not awaiting approval.')
-    if ins.deciding_moderator_id==u.id:fail(403,'SELF_APPROVAL_NOT_ALLOWED','A different senior moderator must approve.')
     reason=body.get('reason') if isinstance(body.get('reason'),str) else ''
     if len(reason.strip())<10:fail(422,'VALIDATION_FAILED','A decline reason of at least 10 characters is required.')
     tx=s.get(Aggregate,ins.transaction_id);d=tx_data(tx);ins.status='CANCELLED';ins.resolved=True
@@ -1775,7 +1793,7 @@ def instruction_execution_block_reason(ins, tx, data):
             ret=next(r for r in data.get('returns',[]) if r.get('id')==ins.origin_id)
             if ret.get('status')!='RECEIPT_CONFIRMED' or not ret.get('supplier_receipt_confirmed_at'):
                 return 'Return refund is blocked until supplier receipt is confirmed.'
-        elif dispute and dispute.get('status') not in ['DECIDED','AWAITING_SECOND_APPROVAL']:
+        elif dispute and dispute.get('status') not in ['DECIDED','RETURN_RECEIPT_CONFIRMED','REFUND_PROCESSING','AWAITING_SECOND_APPROVAL']:
             return 'Dispute refund is blocked until a moderator decision authorizes it.'
     return None
 
@@ -1809,9 +1827,14 @@ def financial_exceptions(s:Session=Depends(db),u:User=Depends(current_user)):
     return {'data':data,'meta':{'server_time':iso(),'next_cursor':None}}
 @app.post('/api/v1/mod/financial-exceptions/{iid}/resolve')
 def resolve_exception(iid:str,body:dict,s:Session=Depends(db),u:User=Depends(current_user)):
-    require_role(u,['SENIOR_MODERATOR'])
     ins=s.scalar(select(Instruction).where(Instruction.id==iid).with_for_update())
     if not ins:fail(404,'NOT_FOUND','Financial instruction not found.')
+    if instruction_classification(ins)=='DISPUTE_RETURN':
+        require_role(u,['MODERATOR','SENIOR_MODERATOR'])
+        dispute=s.get(Dispute, (tx_data(s.get(Aggregate,ins.transaction_id)).get('dispute') or {}).get('id'))
+        if dispute and (dispute.data or {}).get('assigned_to') not in [None,u.id]:fail(403,'DISPUTE_NOT_ASSIGNED','Only the assigned moderator may retry this dispute refund.')
+    else:
+        require_role(u,['SENIOR_MODERATOR'])
     action=body.get('action');reason=body.get('reason') if isinstance(body.get('reason'),str) else ''
     if len(reason.strip())<10:fail(422,'VALIDATION_FAILED','A reason of at least 10 characters is required.')
     if instruction_classification(ins)=='EXCESS_PAYMENT' and action!='RETRY':
@@ -1831,7 +1854,7 @@ def resolve_exception(iid:str,body:dict,s:Session=Depends(db),u:User=Depends(cur
             post_journal(s,tx.id,'REVERSAL',ins.id,[(payable,'DEBIT',ins.amount_kobo),('HELD_FUNDS','CREDIT',ins.amount_kobo)])
         ins.resolved=True
         threshold=int(d.get('config_snapshot',{}).get('high_value_threshold_kobo',50000000))
-        retry_status='PENDING_APPROVAL' if ins.amount_kobo>=threshold else 'QUEUED'
+        retry_status='QUEUED' if instruction_classification(ins)=='DISPUTE_RETURN' else ('PENDING_APPROVAL' if ins.amount_kobo>=threshold else 'QUEUED')
         retry_destination=ins.destination_snapshot
         if os.getenv('PAYMENT_PROVIDER','simulated').lower()=='paga' and not retry_destination:
             recipient_id=tx.supplier_id if ins.instruction_type=='PAYOUT' else tx.buyer_id
@@ -2115,7 +2138,7 @@ def finalize_instruction_success(s,ins,tx,d,provider_mode):
             if lot['id'] in refunded_ids and lot.get('money_status')=='REFUND_PENDING' and lot.get('item_status') in ['IN_DISPUTE','RETURN_RECEIPT_CONFIRMED']:
                 lot['money_status']='REFUNDED';lot['item_status']='SETTLED_REFUNDED';lot['is_frozen']=False;lot.pop('freeze_reason',None);lot.pop('freeze_dispute_id',None)
         dispute=d.get('dispute') or {}
-        if instruction_classification(ins)=='DISPUTE_RETURN' and dispute and dispute.get('status') in ['DECIDED','RETURN_RECEIPT_CONFIRMED','AWAITING_SECOND_APPROVAL']:
+        if instruction_classification(ins)=='DISPUTE_RETURN' and dispute and dispute.get('status') in ['DECIDED','RETURN_RECEIPT_CONFIRMED','REFUND_PROCESSING','AWAITING_SECOND_APPROVAL']:
             other_dispute_refunds=s.scalars(select(Instruction).where(Instruction.transaction_id==tx.id,Instruction.instruction_type=='REFUND',Instruction.refund_classification=='DISPUTE_RETURN',Instruction.id!=ins.id)).all()
             outstanding=any(not instruction_terminal(x) for x in other_dispute_refunds)
             if not outstanding:

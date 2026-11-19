@@ -219,7 +219,8 @@ def test_partial_receipt_acceptance_and_independent_financial_approval(monkeypat
     return_receipt=upload(supplier,tid,'RETURN_RECEIPT')
     confirmed=client.post(f'/api/v1/returns/{rid}/confirm-receipt',headers=supplier,json={'lines':[{'lot_id':rejected_lot['id'],'item_id':iid,'quantity_received':1}],'evidence_ids':[return_receipt]});assert confirmed.status_code==200,confirmed.text
     refund=confirmed.json()['refund'];assert refund['amount_kobo']==50000000 and refund['status']=='PENDING_APPROVAL'
-    assert client.post(f"/api/v1/mod/refunds/{refund['id']}/approve",headers=senior,json={}).json()['status']=='QUEUED'
+    authorized_refund=client.post(f"/api/v1/mod/disputes/{dispute_id}/authorize-refund",headers=moderator,json={})
+    assert authorized_refund.status_code==200 and authorized_refund.json()['status']=='QUEUED'
     monkeypatch.setenv('SIMULATED_INSTRUCTION_SCENARIO','SUCCESS')
     ss=SessionLocal();refund_result=run_financial(ss);ss.close()
     assert any(x['id']==refund['id'] and x['status']=='SUCCEEDED' for x in refund_result['processed'])
