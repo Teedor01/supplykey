@@ -50,7 +50,15 @@ async def lifespan(app):
     init_db()
     yield
 app=FastAPI(title='SupplyKey API',version='1.1.0',description='SupplyKey modular monolith API with a local simulator and gated Paga Engine adapter.',lifespan=lifespan)
-# Declare bearer auth to FastAPI/OpenAPI while retaining database-backed token validation.
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=[
+        "https://supplykey.vercel.app (https://supplykey.vercel.app/)",
+    ],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
 bearer_scheme = HTTPBearer(auto_error=False, scheme_name='BearerAuth', description='SupplyKey access token. Obtain an administrator token through password login followed by MFA verification.')
 app.add_middleware(CORSMiddleware,allow_origins=os.getenv('CORS_ORIGINS','http://localhost:5173,http://127.0.0.1:5173').split(','),allow_credentials=True,allow_methods=['*'],allow_headers=['*'])
 _rate_windows={};_rate_lock=threading.Lock()
