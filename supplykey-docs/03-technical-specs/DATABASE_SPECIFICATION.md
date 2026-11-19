@@ -86,7 +86,7 @@ Buyer and supplier are not separate tables. Role is per transaction.
 | reference | text | UNIQUE, e.g. `SK-2026-000123` |
 | supplier_id | uuid | FK `users`, NOT NULL |
 | buyer_id | uuid | FK `users`, nullable until invitation accepted; `CHECK (buyer_id IS NULL OR buyer_id <> supplier_id)` |
-| status | text | `DRAFT`, `AWAITING_BUYER_AGREEMENT`, `AWAITING_PAYMENT`, `FUNDED`, `COMPLETED`, `CANCELLED`, `EXPIRED` |
+| status | text | `DRAFT`, `AWAITING_BUYER_AGREEMENT`, `AWAITING_PAYMENT`, `FUNDED`, `SETTLEMENT_PENDING`, `COMPLETED`, `CANCELLED`, `EXPIRED` |
 | current_agreement_version_id | uuid | FK `agreement_versions` |
 | goods_total_kobo | bigint | `CHECK >= 0`; equals sum of `line_total_kobo` |
 | delivery_fee_kobo | bigint | `CHECK >= 0`, default 0 |
@@ -330,7 +330,9 @@ Detail and journals: [Financial Engine](FINANCIAL_ENGINE.md).
 | `ledger_entries` | Append-only. `id`, `journal_id`, `transaction_id`, `item_id`, `lot_id`, `account_id`, `direction` (`DEBIT`/`CREDIT`), `amount_kobo > 0`, `entry_type` (`PAYMENT_RECEIVED`, `FUNDS_SECURED`, `RELEASE_AUTHORIZED`, `PAYOUT_SENT`, `REFUND_AUTHORIZED`, `REFUND_SENT`, `FEE_ACCRUED`, `REVERSAL`, `ADJUSTMENT`), `related_entity_type`, `related_entity_id`, `reverses_entry_id`, `reason`, `created_by`, `created_at`. Deferred trigger: each `journal_id` sums to zero. `UNIQUE (related_entity_type, related_entity_id, entry_type, account_id, direction, lot_id)` for idempotent posting |
 | `payouts` | `id`, `transaction_id`, `supplier_id`, `amount_kobo`, `status` (`PENDING_APPROVAL`, `QUEUED`, `SUBMITTED`, `SUCCEEDED`, `FAILED`, `UNKNOWN`, `CANCELLED`), `idempotency_key` UNIQUE, `provider_ref`, `destination_snapshot` jsonb, `origin_type` (`ACCEPTANCE_CONFIRMATION`, `RETURN_RECEIPT_CONFIRMATION`, `DISPUTE_DECISION`; NOT NULL), `origin_id` (decision id or return id; NOT NULL), `retry_of_id` (nullable self-reference), `requires_approval` boolean, `failure_reason`. `CHECK (amount_kobo > 0)` |
 | `payout_items` | `payout_id`, `item_id`, `lot_id`, `quantity`, `amount_kobo` (must equal `instruction_amount(lot)`). Partial UNIQUE (lot_id) where parent status not in (`FAILED`, `CANCELLED`); `SUM(amount_kobo)` of items equals `payouts.amount_kobo` |
-| `refunds`, `refund_items` | Same shape and constraints, including `origin_type`, `origin_id`, `retry_of_id`; buyer destination per provider (VERIFY). Partial UNIQUE (lot_id) for non-failed, non-cancelled refunds |
+| `refunds`, `refund_items` | Same shape and constraints, including `origin_type`, `origin_id`, `retry_of_id`; buyer destination per provider (VERIFY). Partial UNIQUE (lot_id) for non-failed, non-cancelled refunds. Each refund has a required classification: `EXCESS_PAYMENT` (buyer overpayment only) or `DISPUTE_RETURN` (rejection/dispute return) |
+
+Migration `002_settlement_classification.sql` adds `financial_instructions.refund_classification` and `retry_of_id`, backfills legacy overpayment origins as `EXCESS_PAYMENT` and other legacy refunds as `DISPUTE_RETURN`, creates unique retry lineage, and adds `SETTLEMENT_PENDING` to the transaction status constraint.
 
 Reservations are the `pending_payout_kobo` and `pending_refund_kobo` columns of `item_quantity_allocations`, updated with the instruction items in the same transaction; see [Financial Engine 2](FINANCIAL_ENGINE.md#2-ledger-accounts-and-journals).
 
@@ -412,4 +414,4 @@ Guards enforced by triggers on instruction and item creation:
 
 ## Implementation status note
 
-This document defines the intended product or technical behaviour. It is not, by itself, evidence that the current application implements or has passed tests for every requirement. The current implementation status, verified test results and known defects are recorded in the repository-root `STATUS_REPORT.md`. In particular, the 72-hour moderator-resolution deadline is specified but not yet implemented; the frontend simulator checkout is missing; return/refund defects remain open; and browser/PostgreSQL verification has not been completed.
+This document defines intended behaviour; current verification is recorded in the repository-root `STATUS_REPORT.md`. Refund classification and role-scoped financial visibility, settlement-pending state and provider-confirmed completion are implemented and covered by the current SQLite/backend and Node test suites. The 72-hour moderator-resolution deadline remains specified but is not implemented in the runtime. Browser, PostgreSQL migration and live Paga settlement verification remain outstanding.

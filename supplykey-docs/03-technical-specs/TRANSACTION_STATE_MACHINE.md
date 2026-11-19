@@ -27,7 +27,8 @@ This is the only place status names are defined. If a name is not here it is not
 | `AWAITING_BUYER_AGREEMENT` | Sent to buyer; waiting for the buyer to agree to the current agreement version. |
 | `AWAITING_PAYMENT` | Buyer agreed; payment not yet funded. |
 | `FUNDED` | Backend verified that funds are secured by the approved arrangement. Fulfilment progress is read from lots. |
-| `COMPLETED` | Every lot is `SETTLED_RELEASED` or `SETTLED_REFUNDED`. |
+| `SETTLEMENT_PENDING` | Logistics decisions are final for the transaction, but one or more required payout/refund operations or confirmations remain pending, failed or unknown. |
+| `COMPLETED` | Every lot is settled; all current required supplier payouts and applicable refunds are provider-confirmed successful; any prior failed/cancelled instruction is explicitly resolved and superseded by the approved later decision; no excess refund is outstanding; no holds or open evidence/dispute/return actions remain. If no excess payment exists, excess refund state is `NOT_REQUIRED`. |
 | `CANCELLED` | Cancelled before funding. |
 | `EXPIRED` | Invitation or payment window elapsed before funding. |
 
@@ -147,6 +148,7 @@ Decision outcomes (per lot and quantity): `RELEASE`, `REFUND`, `REDISPATCH_OR_RE
 | Evidence file (`evidence_files.status`) | `UPLOADING`, `VERIFIED`, `LINKED`, `RETIRED` |
 | Financial exception (`financial_exceptions.status`) | `OPEN`, `RESOLVED` |
 | Instruction origin (`origin_type`) | `ACCEPTANCE_CONFIRMATION`, `RETURN_RECEIPT_CONFIRMATION`, `DISPUTE_DECISION` |
+| Refund classification (`refund_classification`) | `EXCESS_PAYMENT`, `DISPUTE_RETURN`; required for every refund instruction |
 
 ## 3. Lifecycle diagram
 
@@ -414,4 +416,4 @@ A daily job matches provider settlement records to ledger journals by reference 
 
 ## Implementation status note
 
-This document defines the intended product or technical behaviour. It is not, by itself, evidence that the current application implements or has passed tests for every requirement. The current implementation status, verified test results and known defects are recorded in the repository-root `STATUS_REPORT.md`. In particular, the 72-hour moderator-resolution deadline is specified but not yet implemented; the frontend simulator checkout is missing; return/refund defects remain open; and browser/PostgreSQL verification has not been completed.
+This document defines intended behaviour; current verification is recorded in the repository-root `STATUS_REPORT.md`. Refund classification and role-scoped financial visibility, settlement-pending state and provider-confirmed completion are implemented and covered by the current SQLite/backend and Node test suites. The 72-hour moderator-resolution deadline remains specified but is not implemented in the runtime. Browser, PostgreSQL migration and live Paga settlement verification remain outstanding.

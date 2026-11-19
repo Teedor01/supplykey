@@ -6,7 +6,7 @@ os.environ['DATABASE_URL']=f'sqlite:///{DB}'
 os.environ['APP_ENV']='development'
 os.environ['SUPPLYKEY_SECRET']='test-secret'
 from fastapi.testclient import TestClient
-from app.main import app,SECRET,_rate_windows
+from app.main import app,SECRET,_rate_windows,run_financial
 from app.db import init_db, SessionLocal, Payment, Aggregate, User
 init_db(); client=TestClient(app)
 
@@ -183,7 +183,10 @@ def test_partial_receipt_acceptance_and_independent_financial_approval(monkeypat
     wrong_purpose=client.post(f'/api/v1/transactions/{tid}/decisions',headers=buyer,json={'lines':[{'item_id':iid,'quantity_submitted':1,'quantity_accepted':1,'quantity_rejected':0,'accept_evidence_ids':[reject_proof]}]})
     assert wrong_purpose.status_code==422 and wrong_purpose.json()['error']['code']=='EVIDENCE_PURPOSE_MISMATCH'
     submitted=client.post(f'/api/v1/transactions/{tid}/decisions',headers=buyer,json={'lines':[{'item_id':iid,'quantity_submitted':2,'quantity_accepted':1,'quantity_rejected':1,'accept_evidence_ids':[accept_proof],'reject':{'agreed_condition_ids':[condition_id],'reason_text':'The returned unit is damaged and does not meet the agreed specification.','evidence_ids':[reject_proof]}}]});assert submitted.status_code==200,submitted.text
-    did=submitted.json()['data']['decisions'][0]['id']
+    submitted_data=submitted.json()['data']
+    acceptance_decision=next(x for x in submitted_data['decisions'] if x['review_status']=='SUBMITTED_FOR_REVIEW')
+    dispute_id=submitted_data['dispute']['id']
+    did=acceptance_decision['id']
     assert client.post(f'/api/v1/decisions/{did}/waive-window',headers=buyer).status_code==200
     assert client.post(f'/api/v1/decisions/{did}/waive-window',headers=supplier).json()['status']=='CLOSED_WAIVED'
     moderator=staff_headers('moderator-high@testsupply.ng','MODERATOR')
@@ -194,31 +197,42 @@ def test_partial_receipt_acceptance_and_independent_financial_approval(monkeypat
     decision=client.post(f'/api/v1/mod/decisions/{did}/confirm',headers={**moderator,'If-Match':str(version)},json={'reason':'Evidence matches agreed model.','evidence_ids_considered':[accept_proof]})
     assert decision.status_code==200,decision.text
     payout=decision.json()['data']['payout'];assert payout['amount_kobo']==50000000 and payout['status']=='PENDING_APPROVAL'
-    assert client.post(f"/api/v1/mod/payouts/{payout['id']}/approve",headers=senior,json={}).json()['status']=='QUEUED'
+    blocked=client.post(f"/api/v1/mod/payouts/{payout['id']}/approve",headers=senior,json={})
+    assert blocked.status_code==409 and blocked.json()['error']['code']=='PAYOUT_BLOCKED_BY_DISPUTE'
+    # Resolve the rejected quantity through the full moderator-ordered return path first.
+    assert client.post(f'/api/v1/disputes/{dispute_id}/waive-window',headers=buyer).status_code==200
+    assert client.post(f'/api/v1/disputes/{dispute_id}/waive-window',headers=supplier).json()['status']=='EVIDENCE_WINDOW_CLOSED_WAIVED'
+    dispute_detail=client.get(f'/api/v1/mod/disputes/{dispute_id}',headers=moderator).json()
+    rejected_lot=next(l for l in dispute_detail['transaction']['lots'] if l.get('is_frozen'))
+    dispute_decision=client.post(f'/api/v1/mod/disputes/{dispute_id}/decision',headers=moderator,json={
+        'reason':'The rejected unit must be returned before the buyer receives a refund.',
+        'evidence_ids_considered':[reject_proof],
+        'outcomes':[{'item_id':iid,'lot_id':rejected_lot['id'],'quantity':1,'outcome':'RETURN_AND_REFUND'}]})
+    assert dispute_decision.status_code==200,dispute_decision.text
     ledger=client.get(f'/api/v1/transactions/{tid}/ledger',headers=supplier).json()['data']
-    assert any(x['entry_type']=='RELEASE_AUTHORIZED' for x in ledger)
+    assert not any(x['entry_type']=='RELEASE_AUTHORIZED' for x in ledger)
     assert all(sum(x['amount_kobo'] for x in ledger if x['journal_id']==jid and x['direction']=='DEBIT')==sum(x['amount_kobo'] for x in ledger if x['journal_id']==jid and x['direction']=='CREDIT') for jid in {x['journal_id'] for x in ledger})
+    # Rejected quantity remains held until handover and supplier-confirmed return receipt.
+    opened=client.post(f'/api/v1/transactions/{tid}/returns',headers=buyer,json={'lines':[{'lot_id':rejected_lot['id'],'item_id':iid,'quantity':1}]});assert opened.status_code==200,opened.text
+    rid=opened.json()['data']['id'];handover=upload(buyer,tid,'RETURN_HANDOVER')
+    assert client.post(f'/api/v1/returns/{rid}/handover-evidence',headers=buyer,json={'evidence_ids':[handover],'courier_name':'Demo Courier','rider_name':'Buyer Rider','rider_phone':'+2348000000001'}).status_code==200
+    return_receipt=upload(supplier,tid,'RETURN_RECEIPT')
+    confirmed=client.post(f'/api/v1/returns/{rid}/confirm-receipt',headers=supplier,json={'lines':[{'lot_id':rejected_lot['id'],'item_id':iid,'quantity_received':1}],'evidence_ids':[return_receipt]});assert confirmed.status_code==200,confirmed.text
+    refund=confirmed.json()['refund'];assert refund['amount_kobo']==50000000 and refund['status']=='PENDING_APPROVAL'
+    assert client.post(f"/api/v1/mod/refunds/{refund['id']}/approve",headers=senior,json={}).json()['status']=='QUEUED'
     monkeypatch.setenv('SIMULATED_INSTRUCTION_SCENARIO','SUCCESS')
-    from app.main import run_financial
+    ss=SessionLocal();refund_result=run_financial(ss);ss.close()
+    assert any(x['id']==refund['id'] and x['status']=='SUCCEEDED' for x in refund_result['processed'])
+    assert client.get(f'/api/v1/transactions/{tid}',headers=buyer).json()['dispute']['status']=='RESOLVED'
+    assert client.post(f"/api/v1/mod/payouts/{payout['id']}/approve",headers=senior,json={}).json()['status']=='QUEUED'
     ss=SessionLocal();result=run_financial(ss);ss.close()
     assert any(x['id']==payout['id'] and x['status']=='SUCCEEDED' for x in result['processed'])
     final=client.get(f'/api/v1/transactions/{tid}',headers=buyer).json()
     assert any(l['item_status']=='SETTLED_RELEASED' and l['money_status']=='RELEASED' for l in final['lots'])
-    final_ledger=client.get(f'/api/v1/transactions/{tid}/ledger',headers=supplier).json()['data']
-    assert any(x['entry_type']=='PAYOUT_SENT' for x in final_ledger)
-    # Rejected quantity remains held until handover and supplier-confirmed return receipt.
-    opened=client.post(f'/api/v1/transactions/{tid}/returns',headers=buyer,json={'lines':[{'item_id':iid,'quantity':1}]});assert opened.status_code==200,opened.text
-    rid=opened.json()['data']['id'];handover=upload(buyer,tid,'RETURN_HANDOVER')
-    assert client.post(f'/api/v1/returns/{rid}/handover-evidence',headers=buyer,json={'evidence_ids':[handover],'courier_name':'Demo Courier','rider_name':'Buyer Rider','rider_phone':'+2348000000001'}).status_code==200
-    return_receipt=upload(supplier,tid,'RETURN_RECEIPT')
-    confirmed=client.post(f'/api/v1/returns/{rid}/confirm-receipt',headers=supplier,json={'lines':[{'item_id':iid,'quantity_received':1,'condition_matches_original':True}],'evidence_ids':[return_receipt]});assert confirmed.status_code==200,confirmed.text
-    refund=confirmed.json()['refund'];assert refund['amount_kobo']==50000000 and refund['status']=='PENDING_APPROVAL'
-    assert client.post(f"/api/v1/mod/refunds/{refund['id']}/approve",headers=senior,json={}).json()['status']=='QUEUED'
-    ss=SessionLocal();refund_result=run_financial(ss);ss.close()
-    assert any(x['id']==refund['id'] and x['status']=='SUCCEEDED' for x in refund_result['processed'])
-    final=client.get(f'/api/v1/transactions/{tid}',headers=buyer).json()
     assert any(l['item_status']=='SETTLED_REFUNDED' and l['money_status']=='REFUNDED' for l in final['lots'])
     assert final['status']=='COMPLETED'
+    final_ledger=client.get(f'/api/v1/transactions/{tid}/ledger',headers=supplier).json()['data']
+    assert any(x['entry_type']=='PAYOUT_SENT' for x in final_ledger)
 
 def test_worker_http_endpoints_require_worker_secret():
     assert client.post('/api/v1/worker/run-deadlines').status_code==403

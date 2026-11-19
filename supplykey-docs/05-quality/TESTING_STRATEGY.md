@@ -252,4 +252,4 @@ The 72-hour moderator-resolution deadline is separate from the 48-hour evidence 
 
 ## Implementation status note
 
-This document defines the intended product or technical behaviour. It is not, by itself, evidence that the current application implements or has passed tests for every requirement. The current implementation status, verified test results and known defects are recorded in the repository-root `STATUS_REPORT.md`. In particular, the 72-hour moderator-resolution deadline is specified but not yet implemented; the frontend simulator checkout is missing; return/refund defects remain open; and browser/PostgreSQL verification has not been completed.
+This document defines intended behaviour; current verification is recorded in the repository-root `STATUS_REPORT.md`. Refund classification and role-scoped financial visibility, settlement-pending state and provider-confirmed completion are implemented and covered by the current SQLite/backend and Node test suites. The 72-hour moderator-resolution deadline remains specified but is not implemented in the runtime. Browser, PostgreSQL migration and live Paga settlement verification remain outstanding.

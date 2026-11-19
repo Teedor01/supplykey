@@ -264,7 +264,8 @@ def test_paga_dispute_refund_uses_buyers_verified_destination_and_waits_for_prov
         tx=Aggregate(id=txid,reference='SK-PAGA-REFUND-TEST',supplier_id=supplier_id,buyer_id=buyer_id,status='SETTLEMENT_PENDING',version=1,data={
             'items':[{'id':'item-1','quantity':1,'unit_price_kobo':100000,'line_total_kobo':100000}],
             'lots':[{'id':lot_id,'item_id':'item-1','quantity':1,'item_status':'RETURN_RECEIPT_CONFIRMED','money_status':'REFUND_PENDING','allocation_kobo':100000,'is_frozen':False}],
-            'returns':[{'id':'return-1','status':'RECEIPT_CONFIRMED'}]
+            'returns':[{'id':'return-1','status':'RECEIPT_CONFIRMED','supplier_receipt_confirmed_at':'2026-11-19T00:00:00Z'}],
+                'dispute':{'id':'dispute-1','status':'RETURN_RECEIPT_CONFIRMED','return_required':True}
         })
         payment=Payment(id=payment_id,transaction_id=txid,amount_kobo=100000,status='FUNDS_SECURED',provider_ref='SKPAY-REFUND',mode='PAGA_SANDBOX')
         account=PagaSubsidiaryAccount(id=str(uuid.uuid4()),transaction_id=txid,payment_id=payment_id,account_reference='SKTXPAGAREFUND123',account_number='0123456789',provider_reference='SKPAY-REFUND',status='FUNDED')

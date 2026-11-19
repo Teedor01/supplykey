@@ -129,7 +129,7 @@ Validation: `quantity >= 1`; `unit_price_kobo > 0`; totals are computed by the s
 | Method and URL | Purpose | Authz | Rules |
 |---|---|---|---|
 | `POST /transactions/{id}/payments` | Start payment | Buyer | `AWAITING_PAYMENT`; buyer agreed to current version; `Idempotency-Key` mandatory (P1). Errors `PAYMENT_ALREADY_IN_PROGRESS`, `PAYMENT_ALREADY_FUNDED`, `PROVIDER_UNAVAILABLE` |
-| `GET /transactions/{id}/payments` | Payment status and attempts (no raw provider data for non-staff) | Participants | |
+| `GET /transactions/{id}/payments` | Payment status and attempts | Buyer sees own payment IDs; supplier sees agreed amount/status only (no buyer account, actual received amount or provider reference); staff can reconcile provider references | |
 | `POST /transactions/{id}/payments/{pid}/refresh` | Ask the backend to re-check with the provider | Buyer | 1 per 30 s; the backend queries the provider, never the client |
 | `POST /webhooks/payments/{provider}` | Provider callback | Signature, not Bearer | Stores the raw event first and replies `200` quickly; processing is asynchronous. Invalid signature: stored, flagged, `401`. Duplicate: `200`, no effect |
 
@@ -275,7 +275,9 @@ Early moderator confirm attempt:
 | `POST /returns/{id}/additional-evidence` | Further evidence | Buyer, supplier | Never resets or extends the timer |
 | `POST /returns/{id}/confirm-receipt` | Supplier confirms quantities | Supplier | Body `{lines:[{item_id, quantity_received, condition_matches_original}], evidence_ids[], note}`. Only the stated quantity becomes `RETURN_RECEIPT_CONFIRMED` (L10); a partial confirmation never marks the whole return confirmed; `condition_matches_original: false` is treated as a contest of that quantity |
 | `POST /returns/{id}/contest` | Supplier contests | Supplier | Body `{lines:[{item_id, quantity, reason_code}], note, evidence_ids[]}` with `reason_code` in `WRONG_ITEM`, `DAMAGED`, `QUANTITY_MISMATCH`, `NOT_RECEIVED`. Opens or extends the return's dispute immediately (L12); no refund |
-| `GET /transactions/{id}/payouts`, `GET /transactions/{id}/refunds` | Instruction status | Participants (own amounts), staff | Read only |
+| `GET /transactions/{id}/payouts`, `GET /transactions/{id}/refunds` | Instruction status | Supplier sees own payout amount/reference and `DISPUTE_RETURN`; buyer sees refund history and payout status only; staff sees all | Read only; `EXCESS_PAYMENT` is never returned to supplier |
+| `GET /transactions/{id}/ledger` | Transaction ledger view | Buyer sees buyer-side collection/refund entries; supplier sees own payout and dispute-return entries; staff sees all | Buyer payout ledger amounts and supplier excess-refund ledger entries are filtered server-side |
+| `GET /mod/transactions/{id}/settlement` | Complete financial reconciliation view | Moderator/senior moderator, not a transaction party | Original payment, agreed amount, excess amount/status, supplier entitlement, classified refunds and payout statuses |
 
 Handover response:
 
@@ -338,8 +340,8 @@ When a dispute enters `MODERATOR_REVIEW`, the dispute response must expose `mode
 | `POST /mod/payouts/{id}/approve`, `POST /mod/refunds/{id}/approve` | Approve an instruction that is `PENDING_APPROVAL` (any origin, including dispute decisions) | Senior moderator, different from the deciding moderator | `PENDING_APPROVAL` to `QUEUED`; authorisation journal posts (F2, D8); `403 SELF_APPROVAL_NOT_ALLOWED`; `409 INSTRUCTION_NOT_PENDING_APPROVAL` |
 | `POST /mod/payouts/{id}/decline`, `POST /mod/refunds/{id}/decline` | Decline approval | Senior moderator, different from the deciding moderator | Body `{reason}`; instruction `CANCELLED`; a dispute opens or the origin dispute returns to `MODERATOR_REVIEW` (F9, L22, D9) |
 | `POST /mod/evidence/{id}/flag` | Mark suspicious | Moderator | Append-only |
-| `GET /mod/financial-exceptions` | Failed or `UNKNOWN` instructions, reconciliation mismatches, unsecured payments, overpayments | Senior moderator | Reads `financial_exceptions` |
-| `POST /mod/financial-exceptions/{id}/resolve` | Resolve a failed or unknown instruction or a reconciliation mismatch | Senior moderator | Body `{action, reason}` with `RETRY` or `RELEASE` (definitively failed instruction, F10), `CONFIRM_NOT_EXECUTED` (unknown instruction, F7), `RECORD_ADJUSTMENT` (compensating entry). `RETRY` first reverses the old authorisation journal and releases its reservation, then creates a linked instruction through the full guard and approval rules. `409 OUTCOME_UNKNOWN_RECONCILE_FIRST` for `RETRY` or `RELEASE` on an `UNKNOWN` instruction |
+| `GET /mod/financial-exceptions` | Unresolved `FAILED` and `UNKNOWN` financial instructions with reason and permitted actions | Senior moderator | `RETRY` and `RELEASE` are offered only for definitive `FAILED`; `UNKNOWN` remains blocked pending provider reconciliation |
+| `POST /mod/financial-exceptions/{id}/resolve` | Retry a definitively failed instruction or release its reservation and reopen review | Senior moderator | Body `{action, reason}` with `RETRY` or `RELEASE`. `RETRY` reverses the prior authorisation, creates a linked instruction with a unique retry lineage/idempotency key and reapplies approval thresholds. `UNKNOWN` cannot be retried or released until provider reconciliation establishes a definitive outcome. Excess-payment refunds must use `RETRY`, not `RELEASE` |
 | `GET/PUT /admin/config/{key}`, `POST /admin/staff`, `PATCH /admin/staff/{id}`, `GET /admin/audit`, `POST /admin/reconciliation/run` | Configuration, staff and audit access; start a reconciliation run | Admin | Configuration applies to future transactions only. Admins have no endpoint that creates, approves, retries or resolves any financial instruction or exception |
 
 *Dispute decision request* (no dispatch for units 4 and 5; refund). There is no amount field to choose: the backend computes `44000000` kobo from the lot allocations. If a client sends `amount_kobo` it must equal that value.
@@ -416,4 +418,4 @@ The UI renders buttons only from this list.
 
 ## Implementation status note
 
-This document defines the intended product or technical behaviour. It is not, by itself, evidence that the current application implements or has passed tests for every requirement. The current implementation status, verified test results and known defects are recorded in the repository-root `STATUS_REPORT.md`. In particular, the 72-hour moderator-resolution deadline is specified but not yet implemented; the frontend simulator checkout is missing; return/refund defects remain open; and browser/PostgreSQL verification has not been completed.
+This document defines intended behaviour; current verification is recorded in the repository-root `STATUS_REPORT.md`. Refund classification and role-scoped financial visibility, settlement-pending state and provider-confirmed completion are implemented and covered by the current SQLite/backend and Node test suites. The 72-hour moderator-resolution deadline remains specified but is not implemented in the runtime. Browser, PostgreSQL migration and live Paga settlement verification remain outstanding.

@@ -72,7 +72,7 @@ test('all API endpoint families resolve to exactly one /api/v1 prefix', () => {
     '/transactions', '/transactions/tx_1', '/transactions/tx_1/payments',
     '/transactions/tx_1/dispatch', '/transactions/tx_1/delivery/evidence',
     '/evidence/upload-urls', '/evidence/ev_1/complete', '/evidence/ev_1/content', '/disputes/dis_1',
-    '/mod/disputes', '/mod/acceptance-queue', '/notifications',
+    '/mod/disputes', '/mod/disputes/dis_1/authorize-refund', '/mod/disputes/dis_1/decision', '/transactions/tx_1/returns', '/returns/ret_1/confirm-receipt', '/mod/acceptance-queue', '/notifications',
     '/admin/audit', '/admin/config/key', '/worker/run-deadlines'
   ];
   for (const path of paths) {
@@ -81,4 +81,10 @@ test('all API endpoint families resolve to exactly one /api/v1 prefix', () => {
     assert.equal(url.includes('/api/v1/api/v1'), false);
   }
   assert.throws(() => buildApiUrl('http://localhost:8000', '/api/v1/auth/login'), /versionless absolute path/);
+});
+
+test('Paga bank directory and beneficiary confirmation use versioned backend endpoints', () => {
+  assert.equal(buildApiUrl('https://api.example.test', '/payments/paga/banks'), 'https://api.example.test/api/v1/payments/paga/banks');
+  assert.equal(buildApiUrl('https://api.example.test', '/me/payout-account'), 'https://api.example.test/api/v1/me/payout-account');
+  assert.equal(buildApiUrl('https://api.example.test', '/me/payout-account/confirm'), 'https://api.example.test/api/v1/me/payout-account/confirm');
 });

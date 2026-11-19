@@ -191,7 +191,7 @@ def allowed_actions(tx,user):
         if any(r.get('status')=='HANDOVER_RECORDED' for r in d.get('returns',[])):a+=['confirm_return_receipt','contest_return']
     if role=='BUYER':
         if any(x.get('item_status')=='RECEIPT_CONFIRMED' for x in d.get('lots',[])):a+=['submit_decisions']
-        if any(x.get('item_status')=='REJECTED_AWAITING_RETURN' for x in d.get('lots',[])) and not d.get('return_id') and not any(r.get('status') not in ['RECEIPT_CONFIRMED','CLOSED'] for r in d.get('returns',[])):a+=['open_return']
+        if any(x.get('item_status')=='REJECTED_AWAITING_RETURN' and x.get('return_authorized') for x in d.get('lots',[])) and not d.get('return_id') and not any(r.get('status') not in ['RECEIPT_CONFIRMED','CLOSED'] for r in d.get('returns',[])):a+=['open_return']
         if any(r.get('status')=='AWAITING_HANDOVER_EVIDENCE' for r in d.get('returns',[])):a+=['submit_handover_evidence']
         if tx.status=='AWAITING_BUYER_AGREEMENT':
             if d.get('invitation_acceptance_required') and not d.get('invitation_accepted_at'):a+=['accept_invitation']
@@ -202,7 +202,10 @@ def allowed_actions(tx,user):
             if any(x.get('item_status')=='DISPATCHED' and int(x.get('quantity',0) or 0)>0 for x in d.get('lots',[])):a+=['confirm_received']
             a+=['raise_dispute']
     if any(x.get('review_status')=='SUBMITTED_FOR_REVIEW' and x.get('evidence_window',{}).get('status')=='OPEN' for x in d.get('decisions',[])) and role:a+=['add_review_evidence','waive_window']
-    if d.get('dispute') and d['dispute'].get('status')=='EVIDENCE_WINDOW_OPEN' and role:a+=['add_dispute_evidence','waive_dispute_window']
+    if d.get('dispute') and role:
+        dispute=d['dispute']; party='BUYER' if role=='BUYER' else 'SUPPLIER'
+        if dispute.get('status')=='EVIDENCE_WINDOW_OPEN':a+=['add_dispute_evidence','waive_dispute_window']
+        if any(x.get('status')=='OPEN' and x.get('party')==party for x in dispute.get('evidence_requests',[])):a+=['add_dispute_evidence']
     if any(p.get('status') in ['PENDING','PAYMENT_RECEIVED','UNKNOWN'] for p in d.get('payments',[])) and role=='BUYER':a+=['refresh_payment']
     if role=='BUYER' and sim.simulator_allowed() and any(p.get('mode')==sim.MODE and p.get('status') in ['PENDING','UNKNOWN'] for p in d.get('payments',[])):a+=['simulate_payment']
     return list(dict.fromkeys(a))
@@ -264,7 +267,11 @@ def financial_visibility(s,tx,user):
 
 def present_tx(tx,user,s=None):
     d=tx_data(tx); d.update({'id':tx.id,'reference':tx.reference,'status':tx.status,'version':tx.version,'supplier_id':tx.supplier_id,'buyer_id':tx.buyer_id,'allowed_actions':allowed_actions(tx,user) if user else [],'created_at':iso(tx.created_at),'updated_at':iso(tx.updated_at)})
-    if s is not None:d['settlement']=financial_visibility(s,tx,user)
+    if s is not None:
+        d['settlement']=financial_visibility(s,tx,user)
+        related_ids=[tx.id]+([d.get('dispute',{}).get('id')] if d.get('dispute',{}).get('id') else [])+[r.get('id') for r in d.get('returns',[]) if r.get('id')]+[x.id for x in s.scalars(select(Instruction).where(Instruction.transaction_id==tx.id)).all()]
+        events=s.scalars(select(Audit).where(Audit.entity_id.in_(related_ids)).order_by(Audit.created_at)).all() if related_ids else []
+        d['timeline']=[{'action':a.action,'actor':(s.get(User,a.actor_id).display_name if a.actor_id and s.get(User,a.actor_id) else 'System'),'at':iso(a.created_at),'detail':tx.reference} for a in events]
     # Paga collection-account details are buyer-only. The supplier receives the
     # payment state and transaction status, never the buyer's transfer destination.
     if user and user.id==tx.supplier_id:
@@ -1051,6 +1058,7 @@ def submit_decisions(tid:str,body:dict,s:Session=Depends(db),u:User=Depends(curr
         if accepted and not line.get('accept_evidence_ids'):fail(422,'EVIDENCE_REQUIRED','Acceptance evidence is required.')
         if rejected:
             rej=line.get('reject') or {}
+            if not isinstance(rej.get('reason_text'),str) or len(rej['reason_text'].strip())<10:fail(422,'REJECTION_REASON_REQUIRED','Provide a clear rejection reason of at least 10 characters.')
             if not rej.get('evidence_ids') or not rej.get('agreed_condition_ids'):fail(422,'EVIDENCE_REQUIRED','Rejection evidence and agreed condition references are required.')
             allowed={c['id'] for c in item.get('conditions',[]) if c.get('kind')=='REJECTION'}
             if not set(rej['agreed_condition_ids']).issubset(allowed):fail(422,'REJECTION_REASON_NOT_IN_AGREEMENT','Rejection condition must belong to the agreed agreement version.')
@@ -1064,12 +1072,28 @@ def submit_decisions(tid:str,body:dict,s:Session=Depends(db),u:User=Depends(curr
             extra=split_lot(lot,qty,item)
             if extra is not lot:d['lots'].append(extra)
             lot['item_status']=status
-            decisions.append({'id':uid(),'item_id':item['id'],'lot_id':lot['id'],'quantity':qty,'review_status':'SUBMITTED_FOR_REVIEW' if status=='SUBMITTED_FOR_REVIEW' else 'REJECTED_AWAITING_RETURN','evidence_ids':accept_ids+reject_ids,'reason':(line.get('reject') or {}).get('reason_text')})
+            if status=='REJECTED_AWAITING_RETURN':
+                lot['pre_dispute_status']=status;lot['item_status']='IN_DISPUTE';lot['is_frozen']=True
+            decisions.append({'id':uid(),'item_id':item['id'],'lot_id':lot['id'],'quantity':qty,'review_status':'SUBMITTED_FOR_REVIEW' if status=='SUBMITTED_FOR_REVIEW' else 'DISPUTED','evidence_ids':accept_ids+reject_ids,'reason':(line.get('reject') or {}).get('reason_text'),'rejection_evidence_ids':reject_ids,'agreed_condition_ids':(line.get('reject') or {}).get('agreed_condition_ids',[])})
     window={'id':uid(),'status':'OPEN','ends_at':iso(now()+timedelta(hours=48)),'waivers':{'BUYER':False,'SUPPLIER':False}}
     for dec in decisions:
         dec['evidence_window']=window
-    d.setdefault('decisions',[]).extend(decisions); save_tx(s,tx,d); audit(s,u,'BUYER_DECISION_SUBMITTED','TRANSACTION',tid,{'decision_ids':[x['id'] for x in decisions]});notify(s,tx.supplier_id,'BUYER_DECISION_SUBMITTED',tid,{'reference':tx.reference}); s.commit()
-    return {'data':{'submission_id':uid(),'decisions':decisions,'lots':[{'lot_id':l['id'],'item_status':l['item_status'],'money_status':l.get('money_status','HELD')} for l in d['lots']],'next_steps':{'return_required_for':[{'item_id':x['item_id'],'quantity':x['quantity']} for x in decisions if x['review_status']=='REJECTED_AWAITING_RETURN']}}}
+    rejected_decisions=[x for x in decisions if x['review_status']=='DISPUTED']
+    dispute_payload=None
+    if rejected_decisions:
+        did=uid(); created=now(); evidence_ids=list(dict.fromkeys(eid for x in rejected_decisions for eid in x.get('rejection_evidence_ids',[])))
+        lines=[{'item_id':x['item_id'],'lot_id':x['lot_id'],'quantity':x['quantity'],'reason':x.get('reason'),'agreed_condition_ids':x.get('agreed_condition_ids',[]),'evidence_ids':x.get('rejection_evidence_ids',[])} for x in rejected_decisions]
+        buyer_reasons='; '.join(x.get('reason','') for x in rejected_decisions if x.get('reason'))
+        dispute_payload={'id':did,'reason_code':'GOODS_REJECTED','reason':buyer_reasons or 'Buyer rejected delivered goods.','statement':buyer_reasons or 'Buyer rejected delivered goods.','status':'EVIDENCE_WINDOW_OPEN','origin':'BUYER_REJECTION','created_at':iso(created),'evidence_window_ends_at':iso(created+timedelta(hours=48)),'window_ends_at':iso(created+timedelta(hours=48)),'decision_deadline_at':iso(created+timedelta(hours=72)),'window_closed':False,'waivers':{'BUYER':False,'SUPPLIER':False},'lines':lines,'evidence_submissions':[{'actor_id':u.id,'party':'BUYER','kind':'REJECTION','statement':'Buyer rejection submission','evidence_ids':evidence_ids,'created_at':iso(created)}],'evidence_requests':[],'internal_notes':[],'return_required':False}
+        for dec in rejected_decisions:
+            lot=next(x for x in d['lots'] if x['id']==dec['lot_id']);lot['freeze_dispute_id']=did;dec['dispute_id']=did
+        d['dispute']=dispute_payload;s.add(Dispute(id=did,transaction_id=tx.id,reason_code='GOODS_REJECTED',status='EVIDENCE_WINDOW_OPEN',data=dispute_payload))
+    d.setdefault('decisions',[]).extend(decisions); save_tx(s,tx,d,'DISPUTED' if rejected_decisions else None)
+    audit(s,u,'BUYER_GOODS_REJECTED' if rejected_decisions else 'BUYER_DECISION_SUBMITTED','DISPUTE' if rejected_decisions else 'TRANSACTION',dispute_payload['id'] if dispute_payload else tid,{'decision_ids':[x['id'] for x in decisions],'dispute_id':dispute_payload['id'] if dispute_payload else None})
+    notify(s,tx.supplier_id,'BUYER_GOODS_REJECTED' if rejected_decisions else 'BUYER_DECISION_SUBMITTED',tid,{'reference':tx.reference,'dispute_id':dispute_payload['id'] if dispute_payload else None})
+    notify(s,tx.buyer_id,'GOODS_REJECTION_SUBMITTED' if rejected_decisions else 'BUYER_DECISION_SUBMITTED',tid,{'reference':tx.reference,'dispute_id':dispute_payload['id'] if dispute_payload else None,'status':dispute_payload['status'] if dispute_payload else 'SUBMITTED'})
+    s.commit()
+    return {'data':{'submission_id':uid(),'dispute':dispute_payload,'decisions':decisions,'lots':[{'lot_id':l['id'],'item_status':l['item_status'],'money_status':l.get('money_status','HELD')} for l in d['lots']],'next_steps':{'return_required_for':[{'item_id':x['item_id'],'quantity':x['quantity']} for x in rejected_decisions]}}}
 def _evidence_metadata(ev):
     return {'id':ev.id,'transaction_id':ev.transaction_id,'purpose':ev.purpose,'filename':ev.filename,'name':ev.filename,'mime_type':ev.mime_type,'size_bytes':ev.size_bytes,'sha256':ev.sha256,'status':ev.status,'uploaded_at':iso(ev.created_at),'view_url':f'/api/v1/evidence/{ev.id}/content'}
 
@@ -1078,6 +1102,7 @@ def _decision_evidence_ids(data, decision):
     # Dispatch and delivery-photo records are part of the acceptance case context.
     for dispatch in data.get('dispatches',[]): ids.extend(dispatch.get('evidence_ids',[]))
     for requirement in data.get('delivery_photo_requirements',[]): ids.extend(requirement.get('evidence_ids',[]))
+    for ret in data.get('returns',[]): ids.extend(ret.get('handover_evidence_ids',[]));ids.extend(ret.get('additional_evidence_ids',[]));ids.extend(ret.get('supplier_evidence_ids',[]))
     return list(dict.fromkeys(x for x in ids if x))
 
 def _dispute_evidence_ids(data, dispute):
@@ -1088,6 +1113,8 @@ def _dispute_evidence_ids(data, dispute):
         if decision.get('review_status')=='DISPUTED': ids.extend(_decision_evidence_ids(data,decision))
     for dispatch in data.get('dispatches',[]): ids.extend(dispatch.get('evidence_ids',[]))
     for requirement in data.get('delivery_photo_requirements',[]): ids.extend(requirement.get('evidence_ids',[]))
+    for ret in data.get('returns',[]):
+        ids.extend(ret.get('handover_evidence_ids',[]));ids.extend(ret.get('additional_evidence_ids',[]));ids.extend(ret.get('supplier_evidence_ids',[]))
     return list(dict.fromkeys(x for x in ids if x))
 
 def _case_evidence(s, tx, ids):
@@ -1137,7 +1164,7 @@ def find_instruction(s,iid):
 @app.get('/api/v1/mod/acceptance-queue')
 def acceptance_queue(s:Session=Depends(db),u:User=Depends(current_user)):
     require_role(u,['MODERATOR','SENIOR_MODERATOR']); rows=[]
-    for tx in s.scalars(select(Aggregate).where(Aggregate.status=='FUNDED')).all():
+    for tx in s.scalars(select(Aggregate).where(Aggregate.status.in_(['FUNDED','DISPUTED','SETTLEMENT_PENDING']))).all():
         data=tx_data(tx)
         buyer=s.get(User,tx.buyer_id);supplier=s.get(User,tx.supplier_id)
         for dec in data.get('decisions',[]):
@@ -1186,7 +1213,7 @@ def request_evidence(did:str,body:dict,request:Request,s:Session=Depends(db),u:U
     dec['review_status']='EVIDENCE_REQUESTED'; dec.setdefault('evidence_requests',[]).append({'id':uid(),**body,'status':'OPEN'}); save_tx(s,tx,d);audit(s,u,'ACCEPTANCE_EVIDENCE_REQUESTED','DECISION',did,{'party':body.get('party'),'due_at':body.get('due_at')});s.commit(); return {'status':'EVIDENCE_REQUESTED'}
 @app.post('/api/v1/mod/decisions/{did}/open-dispute')
 def decision_dispute(did:str,body:dict,request:Request,s:Session=Depends(db),u:User=Depends(current_user)):
-    require_role(u,['MODERATOR','SENIOR_MODERATOR']); tx,d,dec=find_decision(s,did,u);check_version(request,tx);ensure_no_unresolved_financial_exception(s,tx); dec['review_status']='DISPUTED'; disp={'id':uid(),'reason_code':body.get('reason_code'),'reason':body.get('reason'),'status':'EVIDENCE_WINDOW_OPEN','created_at':iso()}; d['dispute']=disp
+    require_role(u,['MODERATOR','SENIOR_MODERATOR']); tx,d,dec=find_decision(s,did,u);check_version(request,tx);ensure_no_unresolved_financial_exception(s,tx); dec['review_status']='DISPUTED'; disp={'id':uid(),'reason_code':body.get('reason_code'),'reason':body.get('reason'),'status':'EVIDENCE_WINDOW_OPEN','created_at':iso(),'window_ends_at':iso(now()+timedelta(hours=48)),'decision_deadline_at':iso(now()+timedelta(hours=72)),'window_closed':False}; d['dispute']=disp
     for lot in d['lots']:
         if lot['id']==dec['lot_id']:lot['pre_dispute_status']=lot['item_status'];lot['item_status']='IN_DISPUTE';lot['is_frozen']=True;lot['freeze_dispute_id']=disp['id']
     s.add(Dispute(id=disp['id'],transaction_id=tx.id,reason_code=disp['reason_code'] or 'MODERATOR_REVIEW',data=disp)); save_tx(s,tx,d); audit(s,u,'DISPUTE_OPENED_BY_MODERATOR','DECISION',did,{'dispute_id':disp['id'],'reason_code':disp['reason_code']}); s.commit(); return {'status':'DISPUTED','dispute_id':disp['id']}
@@ -1202,15 +1229,21 @@ def extend_window(did:str,body:dict,request:Request,s:Session=Depends(db),u:User
 def open_return(tid:str,body:dict,s:Session=Depends(db),u:User=Depends(current_user)):
     tx=tx_get(s,tid,u); d=tx_data(tx)
     if tx.buyer_id!=u.id:fail(403,'FORBIDDEN','Only the buyer can initiate a return.')
+    if not d.get('dispute') or not d['dispute'].get('return_required') or d['dispute'].get('status')!='RETURN_PENDING':fail(409,'RETURN_NOT_AUTHORIZED','A moderator must first require return of the rejected goods.')
+    if any(r.get('status') not in ['RECEIPT_CONFIRMED','CLOSED'] for r in d.get('returns',[])):fail(409,'RETURN_ALREADY_OPEN','A return is already in progress.')
     lines=body.get('lines',[]); selected=[]
+    if not lines:fail(422,'RETURN_LINES_REQUIRED','Select the goods quantities authorized for return.')
+    authorized_lots={x['id']:x for x in d['lots'] if x.get('item_status')=='REJECTED_AWAITING_RETURN' and x.get('return_authorized')}
+    if not isinstance(lines,list):fail(422,'RETURN_LINES_REQUIRED','Return lines must be a list.')
     for line in lines:
-        lot=next((x for x in d['lots'] if x['item_id']==line.get('item_id') and x['item_status']=='REJECTED_AWAITING_RETURN' and x['quantity']>=line.get('quantity',0)),None)
-        if not lot:fail(409,'INVALID_STATE_TRANSITION','Return quantity is not awaiting return.')
-        item=next(x for x in d['items'] if x['id']==lot['item_id']);qty=int(line['quantity'])
-        if qty<lot['quantity']:
-            extra=split_lot(lot,qty,item);d['lots'].append(extra)
-        selected.append({'lot_id':lot['id'],'item_id':lot['item_id'],'quantity':qty})
-    ret={'id':uid(),'status':'AWAITING_HANDOVER_EVIDENCE','lines':selected,'created_at':iso(),'handover_deadline_at':None}; d.setdefault('returns',[]).append(ret); save_tx(s,tx,d); s.commit(); return {'data':ret}
+        if not isinstance(line,dict) or isinstance(line.get('quantity'),bool) or not isinstance(line.get('quantity'),int) or line['quantity']<1:fail(422,'INVALID_RETURN_QUANTITY','Each return line needs a positive whole-number quantity and lot ID.')
+        lot=authorized_lots.get(line.get('lot_id'))
+        if not lot or lot['item_id']!=line.get('item_id') or any(x['lot_id']==lot['id'] for x in selected):fail(409,'INVALID_STATE_TRANSITION','Return quantity is not uniquely authorized for this lot.')
+        qty=line['quantity']
+        if qty!=lot['quantity']:fail(422,'RETURN_LINES_INCOMPLETE','Return must include the full quantity of every moderator-authorized lot.')
+        selected.append({'lot_id':lot['id'],'item_id':lot['item_id'],'quantity':qty,'status':'AWAITING_HANDOVER_EVIDENCE'})
+    if {x['lot_id'] for x in selected}!={x['id'] for x in authorized_lots.values()} or any(x['quantity']!=authorized_lots[x['lot_id']]['quantity'] for x in selected):fail(422,'RETURN_LINES_INCOMPLETE','Return must include every quantity the moderator authorized.')
+    ret={'id':uid(),'status':'AWAITING_HANDOVER_EVIDENCE','lines':selected,'created_at':iso(),'handover_deadline_at':None,'decision_moderator_id':(d.get('dispute',{}).get('decision') or {}).get('moderator_id')}; d.setdefault('returns',[]).append(ret); save_tx(s,tx,d);audit(s,u,'RETURN_INITIATED','RETURN',ret['id'],{'dispute_id':d['dispute']['id'],'line_count':len(selected)});notify(s,tx.supplier_id,'BUYER_RETURN_INITIATED',tx.id,{'return_id':ret['id'],'reference':tx.reference});s.commit(); return {'data':ret}
 @app.get('/api/v1/returns/{rid}')
 def return_detail(rid:str,s:Session=Depends(db),u:User=Depends(current_user)):
     for tx in s.scalars(select(Aggregate)).all():
@@ -1232,55 +1265,101 @@ def return_handover(rid:str,body:dict,s:Session=Depends(db),u:User=Depends(curre
     verify_evidence(s,ids,tx,u,expected_purpose='RETURN_HANDOVER');ret.update({'status':'HANDOVER_RECORDED','handover_evidence_ids':ids,'courier_name':body.get('courier_name'),'rider_name':body.get('rider_name'),'rider_phone':body.get('rider_phone'),'tracking_ref':body.get('tracking_ref'),'confirmation_deadline_at':iso(now()+timedelta(hours=72)),'handover_committed_at':iso()})
     for line in ret['lines']:
         lot=next(x for x in d['lots'] if x['id']==line['lot_id']);lot['item_status']='RETURN_HANDOVER_RECORDED'
-    save_tx(s,tx,d);s.commit();return {'status':ret['status'],'confirmation_deadline_at':ret['confirmation_deadline_at']}
+    save_tx(s,tx,d);audit(s,u,'RETURN_HANDOVER_EVIDENCE_SUBMITTED','RETURN',rid,{'evidence_ids':ids,'confirmation_deadline_at':ret['confirmation_deadline_at']});notify(s,tx.supplier_id,'RETURN_HANDOVER_RECORDED',tx.id,{'return_id':rid,'confirmation_deadline_at':ret['confirmation_deadline_at']});s.commit();return {'status':ret['status'],'confirmation_deadline_at':ret['confirmation_deadline_at']}
 @app.post('/api/v1/returns/{rid}/additional-evidence')
 def return_additional(rid:str,body:dict,s:Session=Depends(db),u:User=Depends(current_user)):
-    tx,d,ret=find_return(s,rid,u);ids=body.get('evidence_ids',[]);verify_evidence(s,ids,tx,u);ret.setdefault('additional_evidence_ids',[]).extend(ids);s.commit();return {'status':'ADDED'}
+    tx,d,ret=find_return(s,rid,u);ids=body.get('evidence_ids',[]);verify_evidence(s,ids,tx,u);existing=set(ret.get('additional_evidence_ids',[]));new_ids=[x for x in ids if x not in existing];ret.setdefault('additional_evidence_ids',[]).extend(new_ids);save_tx(s,tx,d);audit(s,u,'RETURN_ADDITIONAL_EVIDENCE_SUBMITTED','RETURN',rid,{'evidence_ids':ids});s.commit();return {'status':'ADDED'}
+def create_return_refund_instruction(s:Session,tx:Aggregate,d:dict,ret:dict,actor:User|None=None):
+    if ret.get('status')!='RECEIPT_CONFIRMED' or not ret.get('supplier_receipt_confirmed_at'):
+        fail(409,'SUPPLIER_RECEIPT_REQUIRED','Supplier-confirmed physical receipt is required before refund authorization.')
+    existing=s.scalar(select(Instruction).where(Instruction.transaction_id==tx.id,Instruction.instruction_type=='REFUND',Instruction.origin_id==ret['id']).limit(1))
+    if existing:return existing
+    total=0
+    for line in ret.get('lines',[]):
+        lot=next((x for x in d.get('lots',[]) if x['id']==line.get('lot_id') and x.get('item_status')=='RETURN_RECEIPT_CONFIRMED'),None)
+        if not lot:fail(409,'RETURN_NOT_CONFIRMED','Every returned lot must remain supplier-confirmed before refund authorization.')
+        item=next(x for x in d.get('items',[]) if x['id']==lot['item_id'])
+        total+=int(lot.get('allocation_kobo',lot['quantity']*item['unit_price_kobo']))
+    prior_refunds=sum(x.amount_kobo for x in s.scalars(select(Instruction).where(Instruction.transaction_id==tx.id,Instruction.instruction_type=='REFUND')).all() if instruction_classification(x)=='DISPUTE_RETURN' and instruction_amount_for_cap(x))
+    if total<=0 or prior_refunds+total>int(d.get('goods_total_kobo') or d.get('total_payable_kobo') or 0):fail(422,'REFUND_EXCEEDS_ELIGIBLE_AMOUNT','Return refund cannot exceed the agreed eligible amount.')
+    destination=verified_destination_snapshot(s.get(User,tx.buyer_id))
+    if os.getenv('PAYMENT_PROVIDER','simulated').lower()=='paga' and not destination:
+        ret['refund_eligibility_status']='AWAITING_VERIFIED_BENEFICIARY'
+        ret['refund_eligibility_message']='Buyer must verify a Paga beneficiary before the moderator can authorize the refund instruction.'
+        return None
+    deciding_moderator_id=ret.get('decision_moderator_id') or (d.get('dispute',{}).get('decision') or {}).get('moderator_id')
+    if not deciding_moderator_id:fail(409,'MODERATOR_AUTHORIZATION_REQUIRED','A moderator decision authorizing this return and refund is required.')
+    ins=Instruction(id=uid(),transaction_id=tx.id,instruction_type='REFUND',refund_classification='DISPUTE_RETURN',amount_kobo=total,status='PENDING_APPROVAL',origin_id=ret['id'],deciding_moderator_id=deciding_moderator_id,idempotency_key='return:'+ret['id'],destination_snapshot=destination)
+    s.add(ins);ret['refund_eligibility_status']='PENDING_APPROVAL';ret['refund_instruction_id']=ins.id
+    return ins
+
 @app.post('/api/v1/returns/{rid}/confirm-receipt')
 def return_confirm(rid:str,body:dict,s:Session=Depends(db),u:User=Depends(current_user)):
     tx,d,ret=find_return(s,rid,u)
-    if tx.supplier_id!=u.id or ret['status']!='HANDOVER_RECORDED':fail(409,'INVALID_STATE_TRANSITION','Supplier confirmation is not available.')
+    if tx.supplier_id!=u.id:fail(403,'FORBIDDEN','Only the supplier can confirm returned goods.')
+    if ret['status']!='HANDOVER_RECORDED' or not (d.get('dispute') or {}).get('return_required'):fail(409,'INVALID_STATE_TRANSITION','Supplier confirmation is not available until the moderator has authorized the return.')
+    if s.scalar(select(Instruction).where(Instruction.transaction_id==tx.id,Instruction.instruction_type=='REFUND',Instruction.origin_id==rid)) or ret.get('supplier_receipt_confirmed_at'):fail(409,'RETURN_ALREADY_CONFIRMED','Return receipt and refund authorization have already been recorded.')
     ids=body.get('evidence_ids',[])
     if not ids:fail(422,'EVIDENCE_REQUIRED','Supplier return receipt evidence is required.')
     verify_evidence(s,ids,tx,u,expected_purpose='RETURN_RECEIPT')
     total=0
-    for line in body.get('lines',[]):
-        lot=next((x for x in d['lots'] if x['item_id']==line.get('item_id') and x['item_status']=='RETURN_HANDOVER_RECORDED'),None)
+    receipt_lines=body.get('lines',[])
+    if not isinstance(receipt_lines,list):fail(422,'RETURN_LINES_INCOMPLETE','Receipt lines must be a list.')
+    if len(receipt_lines)!=len(ret.get('lines',[])):fail(422,'RETURN_LINES_INCOMPLETE','Confirm receipt for every return line in one submission.')
+    if any(not isinstance(x,dict) for x in receipt_lines):fail(422,'RETURN_LINES_INCOMPLETE','Each receipt line must be an object.')
+    submitted_by_lot={x.get('lot_id'):x for x in receipt_lines}
+    if set(submitted_by_lot)!=set(x.get('lot_id') for x in ret.get('lines',[])):fail(422,'RETURN_LINES_INCOMPLETE','Receipt lines must exactly match the authorized return.')
+    for line in receipt_lines:
+        lot=next((x for x in d['lots'] if x['id']==line.get('lot_id') and x['item_id']==line.get('item_id') and x['item_status']=='RETURN_HANDOVER_RECORDED'),None)
         if not lot:fail(409,'INVALID_STATE_TRANSITION','Returned lot is not awaiting receipt confirmation.')
-        qty=int(line.get('quantity_received',0)); item=next(x for x in d['items'] if x['id']==lot['item_id'])
-        if qty<1 or qty>lot['quantity']:fail(422,'QUANTITY_EXCEEDS_AVAILABLE','Return receipt quantity is invalid.')
-        if qty<lot['quantity']:
-            old_qty=lot['quantity'];extra=split_lot(lot,qty,item);d['lots'].append(extra)
-            for ret_line in ret['lines']:
-                if ret_line['lot_id']==lot['id']:
-                    ret_line['quantity']=qty;break
-            ret['lines'].append({'lot_id':extra['id'],'item_id':extra['item_id'],'quantity':extra['quantity']})
-        lot['item_status']='RETURN_RECEIPT_CONFIRMED';lot['money_status']='REFUND_PENDING';total+=qty*item['unit_price_kobo']
-    ret['status']='HANDOVER_RECORDED' if any(any(l['id']==line['lot_id'] and l['item_status']=='RETURN_HANDOVER_RECORDED' for l in d['lots']) for line in ret['lines']) else 'RECEIPT_CONFIRMED';ret['supplier_evidence_ids']=ids
-    status='PENDING_APPROVAL'  # Return refunds always require moderator approval after supplier receipt.
-    prior_refunds=sum(x.amount_kobo for x in s.scalars(select(Instruction).where(Instruction.transaction_id==tx.id,Instruction.instruction_type=='REFUND')).all() if instruction_classification(x)=='DISPUTE_RETURN' and instruction_amount_for_cap(x))
-    if total<=0 or prior_refunds+total>int(d.get('goods_total_kobo') or d.get('total_payable_kobo') or 0):fail(422,'REFUND_EXCEEDS_ELIGIBLE_AMOUNT','Return refund cannot exceed the agreed eligible amount.')
-    destination=verified_destination_snapshot(s.get(User,tx.buyer_id))
-    ins=Instruction(id=uid(),transaction_id=tx.id,instruction_type='REFUND',refund_classification='DISPUTE_RETURN',amount_kobo=total,status=status,origin_id=rid,deciding_moderator_id=None,idempotency_key='return:'+rid,destination_snapshot=destination);s.add(ins)
-    save_tx(s,tx,d);reconcile_transaction_completion(s,tx,d);audit(s,u,'RETURN_RECEIPT_CONFIRMED','RETURN',rid,{'refund_id':ins.id,'amount_kobo':total});notify(s,tx.buyer_id,'REFUND_INSTRUCTION_CREATED',tx.id,{'instruction_id':ins.id,'status':ins.status});s.commit();return {'status':ret['status'],'refund':{'id':ins.id,'status':status,'amount_kobo':total}}
+        qty=line.get('quantity_received'); item=next(x for x in d['items'] if x['id']==lot['item_id'])
+        if isinstance(qty,bool) or not isinstance(qty,int) or qty<1:fail(422,'INVALID_RETURN_RECEIPT_QUANTITY','Supplier receipt quantity must be a positive whole number.')
+        if qty!=lot['quantity'] or qty!=int(next(x['quantity'] for x in ret['lines'] if x['lot_id']==lot['id'])):fail(422,'QUANTITY_EXCEEDS_AVAILABLE','Supplier must confirm the full authorized return quantity; partial receipt requires a separately authorized return.')
+        lot['item_status']='RETURN_RECEIPT_CONFIRMED';lot['money_status']='REFUND_PENDING';total+=int(lot.get('allocation_kobo',qty*item['unit_price_kobo']))
+    ret['status']='RECEIPT_CONFIRMED';ret['supplier_evidence_ids']=ids;ret['supplier_receipt_confirmed_at']=iso();ret['supplier_receipt_confirmed_by']=u.id
+    d['dispute']={**d.get('dispute',{}),'status':'RETURN_RECEIPT_CONFIRMED','return_receipt_confirmed_at':ret['supplier_receipt_confirmed_at']}
+    disp_row=s.get(Dispute,d.get('dispute',{}).get('id'))
+    if disp_row:disp_row.status='RETURN_RECEIPT_CONFIRMED';disp_row.data={**disp_row.data,'status':'RETURN_RECEIPT_CONFIRMED','return_receipt_confirmed_at':ret['supplier_receipt_confirmed_at']}
+    ins=create_return_refund_instruction(s,tx,d,ret,u)
+    save_tx(s,tx,d);reconcile_transaction_completion(s,tx,d);audit(s,u,'RETURN_RECEIPT_CONFIRMED','RETURN',rid,{'refund_id':ins.id if ins else None,'amount_kobo':total,'refund_eligibility_status':ret.get('refund_eligibility_status'),'evidence_ids':ids})
+    notify(s,tx.buyer_id,'RETURN_RECEIPT_CONFIRMED',tx.id,{'return_id':rid,'refund_status':ret.get('refund_eligibility_status')});notify(s,tx.supplier_id,'RETURN_RECEIPT_CONFIRMED',tx.id,{'return_id':rid,'refund_status':ret.get('refund_eligibility_status')})
+    if ins:notify(s,tx.buyer_id,'REFUND_INSTRUCTION_CREATED',tx.id,{'instruction_id':ins.id,'status':ins.status});notify(s,tx.supplier_id,'DISPUTE_REFUND_AUTHORIZED',tx.id,{'instruction_id':ins.id,'status':ins.status})
+    else:notify(s,tx.buyer_id,'REFUND_WAITING_FOR_VERIFIED_BENEFICIARY',tx.id,{'return_id':rid});notify(s,tx.supplier_id,'REFUND_WAITING_FOR_VERIFIED_BENEFICIARY',tx.id,{'return_id':rid})
+    s.commit();return {'status':ret['status'],'refund':{'id':ins.id if ins else None,'status':ins.status if ins else ret.get('refund_eligibility_status'),'amount_kobo':total}}
+@app.post('/api/v1/mod/disputes/{did}/authorize-refund')
+def mod_authorize_return_refund(did:str,s:Session=Depends(db),u:User=Depends(current_user)):
+    require_role(u,['MODERATOR','SENIOR_MODERATOR'])
+    disp=s.get(Dispute,did)
+    if not disp:fail(404,'NOT_FOUND','Dispute not found.')
+    tx=s.get(Aggregate,disp.transaction_id);d=tx_data(tx);detail=disp.data or {};decision=detail.get('decision') or {}
+    if detail.get('assigned_to') and detail.get('assigned_to')!=u.id:fail(403,'DISPUTE_NOT_ASSIGNED','Only the assigned moderator can authorize this dispute refund.')
+    if not any(x.get('outcome')=='RETURN_AND_REFUND' for x in decision.get('outcomes',[])):fail(409,'REFUND_NOT_AUTHORIZED','The moderator decision did not require return and refund.')
+    ret=next((x for x in d.get('returns',[]) if x.get('status')=='RECEIPT_CONFIRMED' and x.get('supplier_receipt_confirmed_at')),None)
+    if not ret:fail(409,'SUPPLIER_RECEIPT_REQUIRED','Supplier-confirmed physical receipt is required before refund authorization.')
+    ins=create_return_refund_instruction(s,tx,d,ret,u)
+    if not ins:fail(409,'VERIFIED_BENEFICIARY_REQUIRED','Buyer must verify a Paga beneficiary before the refund instruction can be authorized.')
+    save_tx(s,tx,d);audit(s,u,'DISPUTE_RETURN_REFUND_AUTHORIZED','INSTRUCTION',ins.id,{'dispute_id':did,'return_id':ret['id'],'amount_kobo':ins.amount_kobo,'destination_fingerprint':(ins.destination_snapshot or {}).get('destination_fingerprint')})
+    notify(s,tx.buyer_id,'REFUND_INSTRUCTION_CREATED',tx.id,{'instruction_id':ins.id,'status':ins.status});notify(s,tx.supplier_id,'DISPUTE_REFUND_AUTHORIZED',tx.id,{'instruction_id':ins.id,'status':ins.status});s.commit();return {'status':ins.status,'instruction_id':ins.id,'amount_kobo':ins.amount_kobo}
+
 @app.post('/api/v1/returns/{rid}/contest')
 def return_contest(rid:str,body:dict,s:Session=Depends(db),u:User=Depends(current_user)):
     tx,d,ret=find_return(s,rid,u)
     if tx.supplier_id!=u.id:fail(403,'FORBIDDEN','Only the supplier can contest returned goods.')
+    if ret.get('status')!='HANDOVER_RECORDED':fail(409,'INVALID_STATE_TRANSITION','Only a handed-over return can be contested, and it can be contested once.')
     verify_evidence(s,body.get('evidence_ids',[]),tx,u,expected_purpose='DISPUTE')
-    disp={'id':uid(),'reason_code':'RETURN_CONTEST','status':'EVIDENCE_WINDOW_OPEN','statement':body.get('note'),'lines':body.get('lines',[]),'created_at':iso()};d['dispute']=disp;ret['status']='CONTESTED'
+    disp={'id':uid(),'reason_code':'RETURN_CONTEST','status':'EVIDENCE_WINDOW_OPEN','statement':body.get('note'),'lines':body.get('lines',[]),'created_at':iso(),'window_ends_at':iso(now()+timedelta(hours=48)),'decision_deadline_at':iso(now()+timedelta(hours=72)),'window_closed':False,'return_required':False,'evidence_submissions':[{'actor_id':u.id,'party':'SUPPLIER','kind':'RETURN_CONTEST','evidence_ids':body.get('evidence_ids',[]),'statement':body.get('note'),'created_at':iso()}]};d['dispute']=disp;ret['status']='CONTESTED'
     for line in ret['lines']:
         lot=next(x for x in d['lots'] if x['id']==line['lot_id']);lot['pre_dispute_status']=lot['item_status'];lot['item_status']='IN_DISPUTE';lot['is_frozen']=True;lot['freeze_dispute_id']=disp['id']
-    s.add(Dispute(id=disp['id'],transaction_id=tx.id,reason_code='RETURN_CONTEST',data=disp));save_tx(s,tx,d);s.commit();return {'status':'DISPUTED','dispute_id':disp['id']}
+    s.add(Dispute(id=disp['id'],transaction_id=tx.id,reason_code='RETURN_CONTEST',data=disp));save_tx(s,tx,d,'DISPUTED');audit(s,u,'RETURN_CONTESTED','DISPUTE',disp['id'],{'evidence_ids':body.get('evidence_ids',[])});notify(s,tx.buyer_id,'RETURN_CONTESTED',tx.id,{'dispute_id':disp['id']});s.commit();return {'status':'DISPUTED','dispute_id':disp['id']}
 @app.post('/api/v1/transactions/{tid}/disputes')
 def raise_dispute(tid:str,body:dict,s:Session=Depends(db),u:User=Depends(current_user)):
     tx=tx_get(s,tid,u);d=tx_data(tx)
     if u.id not in [tx.buyer_id,tx.supplier_id]:fail(403,'FORBIDDEN','Only a transaction party may raise a dispute.')
     if d.get('dispute') and d['dispute'].get('status') not in ['RESOLVED','CLOSED']:fail(409,'DISPUTE_ALREADY_OPEN','A dispute is already open.')
-    disp={'id':uid(),'reason_code':body.get('reason_code','OTHER'),'statement':body.get('statement'),'lines':body.get('lines',[]),'status':'EVIDENCE_WINDOW_OPEN','created_at':iso(),'window_ends_at':iso(now()+timedelta(hours=48))};d['dispute']=disp
+    disp={'id':uid(),'reason_code':body.get('reason_code','OTHER'),'statement':body.get('statement'),'lines':body.get('lines',[]),'status':'EVIDENCE_WINDOW_OPEN','created_at':iso(),'window_ends_at':iso(now()+timedelta(hours=48)),'decision_deadline_at':iso(now()+timedelta(hours=72))};d['dispute']=disp
     for lot in d['lots']:
         if any(lot['item_id']==line['item_id'] for line in body.get('lines',[])):lot['pre_dispute_status']=lot['item_status'];lot['item_status']='IN_DISPUTE';lot['is_frozen']=True;lot['freeze_dispute_id']=disp['id']
-    s.add(Dispute(id=disp['id'],transaction_id=tid,reason_code=disp['reason_code'],data=disp));save_tx(s,tx,d);audit(s,u,'DISPUTE_OPENED','DISPUTE',disp['id']);s.commit();return {'data':disp}
+    s.add(Dispute(id=disp['id'],transaction_id=tid,reason_code=disp['reason_code'],data=disp));save_tx(s,tx,d,'DISPUTED');audit(s,u,'DISPUTE_OPENED','DISPUTE',disp['id']);s.commit();return {'data':disp}
 @app.get('/api/v1/disputes/{did}')
 def dispute_detail(did:str,s:Session=Depends(db),u:User=Depends(current_user)):
     disp=s.get(Dispute,did)
@@ -1290,20 +1369,23 @@ def dispute_detail(did:str,s:Session=Depends(db),u:User=Depends(current_user)):
 def dispute_evidence(did:str,body:dict,s:Session=Depends(db),u:User=Depends(current_user)):
     disp=s.get(Dispute,did)
     if not disp:fail(404,'NOT_FOUND','Dispute not found.')
-    tx=tx_get(s,disp.transaction_id,u);ids=body.get('evidence_ids',[]);verify_evidence(s,ids,tx,u,expected_purpose='DISPUTE');d=tx_data(tx);submission={'actor_id':u.id,'kind':body.get('kind','STATEMENT'),'evidence_ids':ids,'statement':body.get('statement'),'created_at':iso()};d.setdefault('dispute_evidence',[]).append(submission)
+    tx=tx_get(s,disp.transaction_id,u);ids=body.get('evidence_ids',[]);verify_evidence(s,ids,tx,u,expected_purpose='DISPUTE');d=tx_data(tx);kind=body.get('kind','STATEMENT');statement=body.get('statement')
+    if any(x.get('actor_id')==u.id and x.get('kind')==kind and x.get('evidence_ids',[])==ids and x.get('statement')==statement for x in disp.data.get('evidence_submissions',[])):
+        return {'status':'ADDED','idempotent_replay':True}
+    submission={'actor_id':u.id,'kind':kind,'evidence_ids':ids,'statement':statement,'created_at':iso()};d.setdefault('dispute_evidence',[]).append(submission)
     for req in disp.data.get('evidence_requests',[]):
         if req.get('status')=='OPEN' and req.get('party') in ['BUYER','SUPPLIER'] and req.get('party')==('BUYER' if u.id==tx.buyer_id else 'SUPPLIER'):req['status']='ANSWERED'
     disp.data={**disp.data,'evidence_submissions':disp.data.get('evidence_submissions',[])+[submission]}
     if not any(x.get('status')=='OPEN' for x in disp.data.get('evidence_requests',[])) and disp.status=='AWAITING_EVIDENCE':disp.status='MODERATOR_REVIEW';disp.data['status']='MODERATOR_REVIEW'
-    save_tx(s,tx,d);s.commit();return {'status':'ADDED'}
+    d['dispute']={**d.get('dispute',{}),'status':disp.status,'evidence_submissions':disp.data.get('evidence_submissions',[]),'evidence_requests':disp.data.get('evidence_requests',[])}
+    save_tx(s,tx,d);audit(s,u,'DISPUTE_EVIDENCE_SUBMITTED','DISPUTE',did,{'evidence_ids':ids,'kind':submission['kind']});notify(s,tx.buyer_id if u.id==tx.supplier_id else tx.supplier_id,'DISPUTE_EVIDENCE_SUBMITTED',tx.id,{'dispute_id':did,'party':'SUPPLIER' if u.id==tx.supplier_id else 'BUYER'});s.commit();return {'status':'ADDED'}
 @app.post('/api/v1/disputes/{did}/waive-window')
 def dispute_waive(did:str,s:Session=Depends(db),u:User=Depends(current_user)):
     disp=s.get(Dispute,did)
     if not disp:fail(404,'NOT_FOUND','Dispute not found.')
     tx=tx_get(s,disp.transaction_id,u);d=tx_data(tx);data=dict(disp.data or {});waivers=dict(data.get('waivers') or {'BUYER':False,'SUPPLIER':False});waivers['BUYER' if u.id==tx.buyer_id else 'SUPPLIER']=True;data['waivers']=waivers
-    if all(waivers.values()):data['status']='EVIDENCE_WINDOW_CLOSED_WAIVED';data['window_closed']=True;disp.status='EVIDENCE_WINDOW_CLOSED_WAIVED';d.get('dispute',{})['status']='EVIDENCE_WINDOW_CLOSED_WAIVED';d.get('dispute',{})['window_closed']=True;save_tx(s,tx,d)
-    else:tx.version+=1;tx.updated_at=now()
-    disp.data=data;s.commit();return {'status':data.get('status',disp.status)}
+    if all(waivers.values()):data['status']='EVIDENCE_WINDOW_CLOSED_WAIVED';data['window_closed']=True;disp.status='EVIDENCE_WINDOW_CLOSED_WAIVED'
+    d['dispute']={**d.get('dispute',{}),'status':data.get('status',disp.status),'window_closed':bool(data.get('window_closed')),'waivers':waivers};save_tx(s,tx,d);disp.data=data;audit(s,u,'DISPUTE_EVIDENCE_WINDOW_WAIVED','DISPUTE',did,{'party':'BUYER' if u.id==tx.buyer_id else 'SUPPLIER','all_parties_waived':all(waivers.values())});s.commit();return {'status':data.get('status',disp.status)}
 @app.get('/api/v1/mod/disputes')
 def mod_disputes(s:Session=Depends(db),u:User=Depends(current_user)):
     require_role(u,['MODERATOR','SENIOR_MODERATOR']);rows=[]
@@ -1320,7 +1402,9 @@ def mod_disputes(s:Session=Depends(db),u:User=Depends(current_user)):
         # that persisted quantity rather than a potentially partial UI request.
         quantity=(frozen_lot or {}).get('quantity') or (related_decision or {}).get('quantity') or line.get('quantity') or 1
         item=next((i for i in data.get('items',[]) if i.get('id')==item_id),None)
-        rows.append({'id':dispute.id,'transaction_id':tx.id,'reference':tx.reference,'reason_code':dispute.reason_code,'status':dispute.status,'buyer':buyer.display_name if buyer else 'Buyer','supplier':supplier.display_name if supplier else 'Supplier','item_id':item_id,'lot_id':lot_id,'quantity':quantity,'item':f"{(item or {}).get('description','Disputed transaction item')} · {quantity} units",'amount_kobo':quantity*(item or {}).get('unit_price_kobo',0),'reason':detail.get('reason') or detail.get('statement') or detail.get('reason_code') or 'Dispute requires moderator review.','window_status':'OPEN' if detail.get('status') in ['EVIDENCE_WINDOW_OPEN','AWAITING_EVIDENCE'] else 'CLOSED','window_ends_at':detail.get('window_ends_at'),'buyer_photos':'SUBMITTED','supplier_photos':'SUBMITTED','consent_statement_ids':detail.get('consent_statement_ids',[])})
+        affected_lots=[lot for lot in data.get('lots',[]) if lot.get('freeze_dispute_id')==dispute.id and lot.get('is_frozen')]
+        affected=[{'lot_id':lot['id'],'item_id':lot['item_id'],'quantity':lot['quantity'],'amount_kobo':lot.get('allocation_kobo',lot['quantity']*next((x['unit_price_kobo'] for x in data.get('items',[]) if x['id']==lot['item_id']),0))} for lot in affected_lots]
+        rows.append({'id':dispute.id,'transaction_id':tx.id,'reference':tx.reference,'reason_code':dispute.reason_code,'status':dispute.status,'buyer':buyer.display_name if buyer else 'Buyer','supplier':supplier.display_name if supplier else 'Supplier','item_id':item_id,'lot_id':lot_id,'quantity':quantity,'item':f"{(item or {}).get('description','Disputed transaction item')} · {quantity} units",'amount_kobo':sum(x['amount_kobo'] for x in affected) or quantity*(item or {}).get('unit_price_kobo',0),'reason':detail.get('reason') or detail.get('statement') or detail.get('reason_code') or 'Dispute requires moderator review.','window_status':'CLOSED' if detail.get('window_closed') or detail.get('status') in ['EVIDENCE_WINDOW_CLOSED_ELAPSED','EVIDENCE_WINDOW_CLOSED_WAIVED'] else 'OPEN','window_ends_at':detail.get('window_ends_at'),'decision_deadline_at':detail.get('decision_deadline_at'),'decision_overdue':bool(detail.get('decision_overdue')),'buyer_photos':'SUBMITTED','supplier_photos':'SUBMITTED','consent_statement_ids':detail.get('consent_statement_ids',[])})
     return {'data':rows,'meta':{'server_time':iso(),'next_cursor':None}}
 @app.get('/api/v1/mod/disputes/{did}')
 def mod_dispute_detail(did:str,s:Session=Depends(db),u:User=Depends(current_user)):
@@ -1331,7 +1415,10 @@ def mod_dispute_detail(did:str,s:Session=Depends(db),u:User=Depends(current_user
     data=tx_data(tx);detail=disp.data or data.get('dispute') or {}
     ids=_dispute_evidence_ids(data,detail)
     buyer=s.get(User,tx.buyer_id);supplier=s.get(User,tx.supplier_id)
-    return {'dispute':detail,'transaction':{'id':tx.id,'reference':tx.reference,'buyer':buyer.display_name if buyer else None,'supplier':supplier.display_name if supplier else None,'items':data.get('items',[]),'lots':data.get('lots',[])},'audit':[],'version':tx.version,'evidence':_case_evidence(s,tx,ids),'evidence_requests':detail.get('evidence_requests',[]),'notes':detail.get('internal_notes',[])}
+    related_audit_ids=[did,tx.id]+[r.get('id') for r in data.get('returns',[]) if r.get('id')]+[x.id for x in s.scalars(select(Instruction).where(Instruction.transaction_id==tx.id)).all()]
+    audit_rows=s.scalars(select(Audit).where(Audit.entity_id.in_(related_audit_ids)).order_by(Audit.created_at)).all()
+    history=[{'action':a.action,'actor':(s.get(User,a.actor_id).display_name if a.actor_id and s.get(User,a.actor_id) else 'System'),'at':iso(a.created_at),'details':a.details or {}} for a in audit_rows]
+    return {'dispute':detail,'transaction':{'id':tx.id,'reference':tx.reference,'buyer':buyer.display_name if buyer else None,'supplier':supplier.display_name if supplier else None,'items':data.get('items',[]),'lots':data.get('lots',[]),'returns':data.get('returns',[])},'audit':history,'timeline':history,'version':tx.version,'evidence':_case_evidence(s,tx,ids),'evidence_requests':detail.get('evidence_requests',[]),'notes':detail.get('internal_notes',[])}
 @app.post('/api/v1/mod/disputes/{did}/assign')
 def assign_dispute(did:str,body:dict,request:Request,s:Session=Depends(db),u:User=Depends(current_user)):
     require_role(u,['MODERATOR','SENIOR_MODERATOR']);disp=s.get(Dispute,did)
@@ -1340,7 +1427,7 @@ def assign_dispute(did:str,body:dict,request:Request,s:Session=Depends(db),u:Use
     moderator_id=body.get('moderator_id') or u.id
     assignee=s.get(User,moderator_id)
     if not assignee or assignee.role not in ['MODERATOR','SENIOR_MODERATOR']:fail(422,'INVALID_MODERATOR','Assignment must target an existing moderator account.')
-    disp.data={**disp.data,'assigned_to':moderator_id};tx=s.get(Aggregate,disp.transaction_id);tx.version+=1;tx.updated_at=now();audit(s,u,'DISPUTE_ASSIGNED','DISPUTE',did,{'moderator_id':moderator_id});s.commit();return {'status':'ASSIGNED','moderator_id':moderator_id}
+    disp.data={**disp.data,'assigned_to':moderator_id};tx=s.get(Aggregate,disp.transaction_id);tx.version+=1;tx.updated_at=now();audit(s,u,'DISPUTE_ASSIGNED','DISPUTE',did,{'moderator_id':moderator_id});notify(s,moderator_id,'DISPUTE_ASSIGNED',tx.id,{'dispute_id':did});s.commit();return {'status':'ASSIGNED','moderator_id':moderator_id}
 @app.post('/api/v1/mod/disputes/{did}/request-evidence')
 def dispute_request_evidence(did:str,body:dict,request:Request,s:Session=Depends(db),u:User=Depends(current_user)):
     require_role(u,['MODERATOR','SENIOR_MODERATOR']);disp=s.get(Dispute,did)
@@ -1349,7 +1436,7 @@ def dispute_request_evidence(did:str,body:dict,request:Request,s:Session=Depends
     if body.get('party') not in ['BUYER','SUPPLIER'] or not isinstance(body.get('question'),str) or not body['question'].strip() or not body.get('due_at'):fail(422,'VALIDATION_FAILED','A valid party, evidence question and due date are required.')
     try:datetime.fromisoformat(body['due_at'].replace('Z','+00:00'))
     except (ValueError,AttributeError):fail(422,'VALIDATION_FAILED','Evidence due date must be ISO-8601.')
-    data=dict(disp.data or {});requests=list(data.get('evidence_requests',[]));requests.append({'id':uid(),**body,'status':'OPEN'});data['evidence_requests']=requests;disp.data=data;disp.status='AWAITING_EVIDENCE';tx.version+=1;tx.updated_at=now();audit(s,u,'DISPUTE_EVIDENCE_REQUESTED','DISPUTE',did,{'party':body.get('party'),'due_at':body.get('due_at')});s.commit();return {'status':disp.status}
+    data=dict(disp.data or {});requests=list(data.get('evidence_requests',[]));requests.append({'id':uid(),**body,'status':'OPEN','requested_by':u.id,'created_at':iso()});data['evidence_requests']=requests;data['status']='AWAITING_EVIDENCE';disp.data=data;disp.status='AWAITING_EVIDENCE';d=tx_data(tx);d['dispute']={**d.get('dispute',{}),'status':'AWAITING_EVIDENCE','evidence_requests':requests};save_tx(s,tx,d);audit(s,u,'DISPUTE_EVIDENCE_REQUESTED','DISPUTE',did,{'party':body.get('party'),'due_at':body.get('due_at')});notify(s,tx.buyer_id if body.get('party')=='BUYER' else tx.supplier_id,'DISPUTE_EVIDENCE_REQUESTED',tx.id,{'dispute_id':did,'question':body['question'],'due_at':body['due_at']});s.commit();return {'status':disp.status}
 @app.post('/api/v1/mod/disputes/{did}/notes')
 def dispute_note(did:str,body:dict,request:Request,s:Session=Depends(db),u:User=Depends(current_user)):
     require_role(u,['MODERATOR','SENIOR_MODERATOR']);disp=s.get(Dispute,did)
@@ -1368,7 +1455,7 @@ def dispute_hold_resume(did:str,body:dict,request:Request,s:Session=Depends(db),
     reason=body.get('reason') if isinstance(body.get('reason'),str) else ''
     reason=reason.strip()
     if len(reason)<10:fail(422,'VALIDATION_FAILED','A reason of at least 10 characters is required.')
-    disp.status='ON_HOLD' if request.url.path.endswith('/hold') else 'MODERATOR_REVIEW';disp.data={**disp.data,'moderator_reason':reason};tx=s.get(Aggregate,disp.transaction_id);tx.version+=1;tx.updated_at=now();audit(s,u,'DISPUTE_HELD' if disp.status=='ON_HOLD' else 'DISPUTE_RESUMED','DISPUTE',did,{'reason':reason});s.commit();return {'status':disp.status}
+    disp.status='ON_HOLD' if request.url.path.endswith('/hold') else 'MODERATOR_REVIEW';disp.data={**disp.data,'status':disp.status,'moderator_reason':reason};tx=s.get(Aggregate,disp.transaction_id);d=tx_data(tx);d['dispute']={**d.get('dispute',{}),'status':disp.status,'moderator_reason':reason};save_tx(s,tx,d);audit(s,u,'DISPUTE_HELD' if disp.status=='ON_HOLD' else 'DISPUTE_RESUMED','DISPUTE',did,{'reason':reason});notify(s,tx.buyer_id,'DISPUTE_STATUS_CHANGED',tx.id,{'dispute_id':did,'status':disp.status});notify(s,tx.supplier_id,'DISPUTE_STATUS_CHANGED',tx.id,{'dispute_id':did,'status':disp.status});s.commit();return {'status':disp.status}
 @app.post('/api/v1/mod/disputes/{did}/extend-window')
 def dispute_extend(did:str,body:dict,request:Request,s:Session=Depends(db),u:User=Depends(current_user)):
     require_role(u,['MODERATOR','SENIOR_MODERATOR']);disp=s.get(Dispute,did)
@@ -1380,20 +1467,26 @@ def dispute_extend(did:str,body:dict,request:Request,s:Session=Depends(db),u:Use
     reason=body.get('reason') if isinstance(body.get('reason'),str) else ''
     reason=reason.strip()
     if hours<1 or hours>120 or len(reason)<10:fail(422,'VALIDATION_FAILED','A reason of at least 10 characters and additional hours between 1 and 120 are required.')
-    data=dict(disp.data or {});data['window_extended']=True;data['window_ends_at']=iso(now()+timedelta(hours=hours));disp.data=data;tx=s.get(Aggregate,disp.transaction_id);tx.version+=1;tx.updated_at=now();audit(s,u,'DISPUTE_EVIDENCE_WINDOW_EXTENDED','DISPUTE',did,{'extra_hours':hours,'reason':reason,'window_ends_at':disp.data['window_ends_at']});s.commit();return {'status':'OPEN','window_ends_at':disp.data['window_ends_at']}
+    data=dict(disp.data or {});data['window_extended']=True;data['window_ends_at']=iso(now()+timedelta(hours=hours));disp.data=data;tx=s.get(Aggregate,disp.transaction_id);d=tx_data(tx);d['dispute']={**d.get('dispute',{}),'window_extended':True,'window_ends_at':data['window_ends_at']};save_tx(s,tx,d);audit(s,u,'DISPUTE_EVIDENCE_WINDOW_EXTENDED','DISPUTE',did,{'extra_hours':hours,'reason':reason,'window_ends_at':disp.data['window_ends_at']});notify(s,tx.buyer_id,'DISPUTE_EVIDENCE_WINDOW_EXTENDED',tx.id,{'dispute_id':did,'window_ends_at':disp.data['window_ends_at']});notify(s,tx.supplier_id,'DISPUTE_EVIDENCE_WINDOW_EXTENDED',tx.id,{'dispute_id':did,'window_ends_at':disp.data['window_ends_at']});s.commit();return {'status':'OPEN','window_ends_at':disp.data['window_ends_at']}
 @app.post('/api/v1/mod/disputes/{did}/decision')
 def dispute_decision(did:str,body:dict,request:Request,s:Session=Depends(db),u:User=Depends(current_user)):
     require_role(u,['MODERATOR','SENIOR_MODERATOR']);disp=s.get(Dispute,did)
     if not disp:fail(404,'NOT_FOUND','Dispute not found.')
-    if not body.get('reason') or not body.get('outcomes') or not body.get('evidence_ids_considered'):
-        fail(400,'VALIDATION_FAILED','Reason, evidence considered and quantity-level outcomes are required.')
+    if not isinstance(body.get('reason'),str) or len(body['reason'].strip())<10 or not isinstance(body.get('outcomes'),list) or not body['outcomes'] or not isinstance(body.get('evidence_ids_considered'),list) or not body['evidence_ids_considered']:
+        fail(422,'VALIDATION_FAILED','A decision reason of at least 10 characters, a list of verified evidence IDs and quantity-level outcomes are required.')
     if disp.status not in ['EVIDENCE_WINDOW_CLOSED_ELAPSED','EVIDENCE_WINDOW_CLOSED_WAIVED'] and not disp.data.get('window_closed'):
         fail(409,'EVIDENCE_WINDOW_OPEN','Dispute evidence window must be closed before a decision.')
     if any(x.get('status')=='OPEN' for x in disp.data.get('evidence_requests',[])):
         fail(409,'EVIDENCE_REQUEST_OPEN','Open evidence requests must be closed before a decision.')
     tx=tx_get(s,disp.transaction_id,staff=True);check_version(request,tx);ensure_no_unresolved_financial_exception(s,tx)
     if u.id in [tx.supplier_id,tx.buyer_id]:fail(403,'MODERATOR_IS_PARTY','A transaction party cannot decide this dispute.')
-    d=tx_data(tx);instructions=[];payout_total=0;refund_total=0;payout_lots=[];refund_lots=[];seen=set()
+    if disp.data.get('assigned_to') and disp.data.get('assigned_to')!=u.id:fail(403,'DISPUTE_NOT_ASSIGNED','Only the assigned moderator may decide this dispute.')
+    if disp.data.get('decision'):fail(409,'DISPUTE_ALREADY_DECIDED','This dispute already has a recorded decision.')
+    d=tx_data(tx);instructions=[];payout_total=0;refund_total=0;payout_lots=[];refund_lots=[];return_lots=[];seen=set()
+    required_lot_ids={x['id'] for x in d.get('lots',[]) if x.get('is_frozen') and x.get('freeze_dispute_id')==did}
+    if any(not isinstance(x,dict) for x in body['outcomes']):fail(422,'VALIDATION_FAILED','Each moderator outcome must be an object.')
+    outcome_kinds={x.get('outcome') for x in body['outcomes']}
+    if len(outcome_kinds)!=1:fail(422,'MIXED_DISPUTE_OUTCOMES_NOT_SUPPORTED','All frozen quantities in this dispute must receive the same decision outcome. Open separate cases to decide mixed outcomes.')
     for eid in body['evidence_ids_considered']:
         ev=s.get(Evidence,eid)
         if not ev or ev.transaction_id!=tx.id or ev.status!='VERIFIED':
@@ -1405,18 +1498,22 @@ def dispute_decision(did:str,body:dict,request:Request,s:Session=Depends(db),u:U
         if lot.get('freeze_dispute_id')!=did:fail(409,'LOT_FROZEN','Lot is not frozen by this dispute.')
         if lot['id'] in seen:fail(400,'VALIDATION_FAILED','A lot may appear only once in a moderator decision.')
         seen.add(lot['id']);kind=outcome.get('outcome')
-        if kind not in ['RELEASE','REFUND','REDISPATCH_OR_REPLACEMENT','NO_FINANCIAL_ACTION']:
+        if kind not in ['RELEASE','REFUND','RETURN_AND_REFUND','REDISPATCH_OR_REPLACEMENT','NO_FINANCIAL_ACTION']:
             fail(400,'VALIDATION_FAILED','Unsupported dispute outcome.')
-        if int(outcome.get('quantity',lot['quantity']))!=lot['quantity']:
-            fail(422,'QUANTITY_EXCEEDS_AVAILABLE','Decision outcomes must cover a whole lot; split the lot first.')
-        if kind in ['RELEASE','REFUND']:
+        if disp.reason_code=='GOODS_REJECTED' and kind=='NO_FINANCIAL_ACTION':fail(422,'DISPUTE_OUTCOME_REQUIRED','A goods-rejection case must resolve each frozen quantity through release, refund, return-and-refund, or consented redispatch.')
+        decision_quantity=outcome.get('quantity',lot['quantity'])
+        if isinstance(decision_quantity,bool) or not isinstance(decision_quantity,int) or decision_quantity!=lot['quantity']:
+            fail(422,'QUANTITY_EXCEEDS_AVAILABLE','Decision outcomes must cover the exact whole lot quantity.')
+        if kind in ['RELEASE','REFUND','RETURN_AND_REFUND']:
             amount=lot.get('allocation_kobo',lot['quantity']*next(i['unit_price_kobo'] for i in d['items'] if i['id']==lot['item_id']))
             if outcome.get('amount_kobo') not in [None,amount]:
                 fail(422,'AMOUNT_MUST_MATCH_ALLOCATION','Amount must equal the lot allocation.',{'expected_amount_kobo':amount})
-            if kind=='RELEASE':payout_total+=amount;payout_lots.append(lot)
-            else:refund_total+=amount;refund_lots.append(lot)
-            lot['money_status']='RELEASE_PENDING' if kind=='RELEASE' else 'REFUND_PENDING'
-            # The dispute freeze remains until provider-confirmed settlement.
+            if kind=='RELEASE':payout_total+=amount;payout_lots.append(lot);lot['money_status']='RELEASE_PENDING'
+            elif kind=='REFUND':refund_total+=amount;refund_lots.append(lot);lot['money_status']='REFUND_PENDING'
+            else:
+                if any(r.get('status')=='RECEIPT_CONFIRMED' and any(line.get('lot_id')==lot['id'] for line in r.get('lines',[])) for r in d.get('returns',[])):fail(409,'RETURN_ALREADY_RECEIVED','Supplier has already confirmed receipt of this return; decide refund or release without requiring a second return.')
+                return_lots.append(lot);lot['item_status']='REJECTED_AWAITING_RETURN';lot['return_authorized']=True;lot['money_status']='HELD';lot['is_frozen']=True
+            # The dispute freeze remains until provider-confirmed settlement or return receipt.
         elif kind=='NO_FINANCIAL_ACTION':
             if outcome.get('amount_kobo',0)!=0:fail(422,'AMOUNT_MUST_MATCH_ALLOCATION','NO_FINANCIAL_ACTION must have zero amount.')
             lot['item_status']=lot.get('pre_dispute_status','AWAITING_DISPATCH');lot['money_status']='HELD';lot['is_frozen']=False
@@ -1433,28 +1530,33 @@ def dispute_decision(did:str,body:dict,request:Request,s:Session=Depends(db),u:U
             if deadline_dt<=now():fail(400,'VALIDATION_FAILED','Redispatch deadline must be in the future.')
             lot['item_status']='AWAITING_DISPATCH';lot['money_status']='HELD';lot['is_frozen']=False
             lot.pop('pre_dispute_status',None);lot.pop('freeze_dispute_id',None);d['dispatch_deadline_at']=iso(deadline_dt)
+    if seen!=required_lot_ids:fail(422,'DISPUTE_OUTCOMES_INCOMPLETE','Moderator decision must cover every quantity frozen by this dispute.',{'required_lot_ids':sorted(required_lot_ids),'submitted_lot_ids':sorted(seen)})
     threshold=d.get('config_snapshot',{}).get('high_value_threshold_kobo',50000000);requires_second=False
+    decision_revision=int(disp.data.get('decision_revision',0))+1
     if payout_total:
         prior_payout=sum(x.amount_kobo for x in s.scalars(select(Instruction).where(Instruction.transaction_id==tx.id,Instruction.instruction_type=='PAYOUT')).all() if instruction_amount_for_cap(x))
         if prior_payout+payout_total>int(d.get('goods_total_kobo') or d.get('total_payable_kobo') or 0):fail(422,'PAYOUT_EXCEEDS_AGREED_ENTITLEMENT','Supplier payout cannot exceed the agreed transaction amount.')
         destination=verified_destination_snapshot(s.get(User,tx.supplier_id))
         status='PENDING_APPROVAL' if payout_total>=threshold or (os.getenv('PAYMENT_PROVIDER','simulated').lower()=='paga' and not destination) else 'QUEUED';requires_second|=status=='PENDING_APPROVAL'
-        ins=Instruction(id=uid(),transaction_id=tx.id,instruction_type='PAYOUT',amount_kobo=payout_total,status=status,origin_id=did,deciding_moderator_id=u.id,idempotency_key='dispute:'+did+':PAYOUT',destination_snapshot=destination);s.add(ins)
+        ins=Instruction(id=uid(),transaction_id=tx.id,instruction_type='PAYOUT',amount_kobo=payout_total,status=status,origin_id=did,deciding_moderator_id=u.id,idempotency_key='dispute:'+did+':decision:'+str(decision_revision)+':PAYOUT',destination_snapshot=destination);s.add(ins)
         if status=='QUEUED':post_journal(s,tx.id,'RELEASE_AUTHORIZED',ins.id,[('HELD_FUNDS','DEBIT',payout_total),('SUPPLIER_PAYABLE','CREDIT',payout_total)])
         instructions.append({'type':'PAYOUT','id':ins.id,'status':status,'amount_kobo':payout_total,'origin_type':'DISPUTE_DECISION'})
     if refund_total:
         prior_dispute_refund=sum(x.amount_kobo for x in s.scalars(select(Instruction).where(Instruction.transaction_id==tx.id,Instruction.instruction_type=='REFUND')).all() if instruction_classification(x)=='DISPUTE_RETURN' and instruction_amount_for_cap(x))
         if prior_dispute_refund+refund_total>int(d.get('goods_total_kobo') or d.get('total_payable_kobo') or 0):fail(422,'REFUND_EXCEEDS_ELIGIBLE_AMOUNT','Dispute refund cannot exceed the agreed eligible amount.')
         destination=verified_destination_snapshot(s.get(User,tx.buyer_id))
+        if os.getenv('PAYMENT_PROVIDER','simulated').lower()=='paga' and not destination:fail(409,'VERIFIED_BENEFICIARY_REQUIRED','Buyer must verify and confirm a Paga refund account before a dispute refund can be authorized.')
         status='PENDING_APPROVAL' if refund_total>=threshold or (os.getenv('PAYMENT_PROVIDER','simulated').lower()=='paga' and not destination) else 'QUEUED';requires_second|=status=='PENDING_APPROVAL'
-        ins=Instruction(id=uid(),transaction_id=tx.id,instruction_type='REFUND',refund_classification='DISPUTE_RETURN',amount_kobo=refund_total,status=status,origin_id=did,deciding_moderator_id=u.id,idempotency_key='dispute:'+did+':REFUND',destination_snapshot=destination);s.add(ins)
+        ins=Instruction(id=uid(),transaction_id=tx.id,instruction_type='REFUND',refund_classification='DISPUTE_RETURN',amount_kobo=refund_total,status=status,origin_id=did,deciding_moderator_id=u.id,idempotency_key='dispute:'+did+':decision:'+str(decision_revision)+':REFUND',destination_snapshot=destination);s.add(ins)
         if status=='QUEUED':post_journal(s,tx.id,'REFUND_AUTHORIZED',ins.id,[('HELD_FUNDS','DEBIT',refund_total),('BUYER_REFUNDABLE','CREDIT',refund_total)])
         instructions.append({'type':'REFUND','id':ins.id,'status':status,'amount_kobo':refund_total,'origin_type':'DISPUTE_DECISION'})
-    disp.status='AWAITING_SECOND_APPROVAL' if requires_second else 'DECIDED'
-    disp.data={**disp.data,'status':disp.status,'decision':{'reason':body['reason'],'outcomes':body['outcomes'],'evidence_ids_considered':body['evidence_ids_considered'],'moderator_id':u.id,'created_at':iso()}}
-    d['dispute']={**d.get('dispute',{}),'status':disp.status,'decision':disp.data.get('decision')}
-    save_tx(s,tx,d);reconcile_transaction_completion(s,tx,d);audit(s,u,'DISPUTE_DECIDED','DISPUTE',did,{'instructions':instructions});s.commit()
-    return {'status':disp.status,'instructions':instructions}
+    for ret in d.get('returns',[]):
+        if ret.get('status')=='CONTESTED':ret['status']='CLOSED';ret['closed_by_dispute_decision_at']=iso()
+    disp.status='AWAITING_SECOND_APPROVAL' if requires_second else ('RETURN_PENDING' if return_lots else 'DECIDED')
+    disp.data={**disp.data,'status':disp.status,'decision_revision':decision_revision,'return_required':bool(return_lots),'decision':{'reason':body['reason'],'outcomes':body['outcomes'],'evidence_ids_considered':body['evidence_ids_considered'],'moderator_id':u.id,'created_at':iso()}}
+    d['dispute']={**d.get('dispute',{}),'status':disp.status,'decision_revision':decision_revision,'return_required':bool(return_lots),'decision':disp.data.get('decision')}
+    save_tx(s,tx,d,'FUNDED' if outcome_kinds.issubset({'REDISPATCH_OR_REPLACEMENT','NO_FINANCIAL_ACTION'}) else None);reconcile_transaction_completion(s,tx,d);audit(s,u,'DISPUTE_DECIDED','DISPUTE',did,{'instructions':instructions,'return_required':bool(return_lots),'return_lot_ids':[x['id'] for x in return_lots]});notify(s,tx.buyer_id,'DISPUTE_DECISION_RECORDED',tx.id,{'dispute_id':did,'status':disp.status,'return_required':bool(return_lots)});notify(s,tx.supplier_id,'DISPUTE_DECISION_RECORDED',tx.id,{'dispute_id':did,'status':disp.status,'return_required':bool(return_lots)});s.commit()
+    return {'status':disp.status,'instructions':instructions,'return_required':bool(return_lots)}
 
 @app.post('/api/v1/mod/payouts/{iid}/approve')
 @app.post('/api/v1/mod/refunds/{iid}/approve')
@@ -1463,6 +1565,11 @@ def approve_instruction(iid:str,s:Session=Depends(db),u:User=Depends(current_use
     if ins.status!='PENDING_APPROVAL':fail(409,'INSTRUCTION_NOT_PENDING_APPROVAL','Instruction is not awaiting approval.')
     if ins.deciding_moderator_id==u.id:fail(403,'SELF_APPROVAL_NOT_ALLOWED','A different senior moderator must approve.')
     tx=s.get(Aggregate,ins.transaction_id);ensure_no_unresolved_financial_exception(s,tx,exclude_id=ins.id)
+    if ins.instruction_type=='PAYOUT':
+        block_reason=instruction_execution_block_reason(ins,tx,tx_data(tx))
+        origin_dispute=s.get(Dispute,ins.origin_id)
+        approved_dispute_release=bool(origin_dispute and origin_dispute.status=='AWAITING_SECOND_APPROVAL' and any(x.get('outcome')=='RELEASE' for x in (origin_dispute.data or {}).get('decision',{}).get('outcomes',[])))
+        if block_reason and not approved_dispute_release:fail(409,'PAYOUT_BLOCKED_BY_DISPUTE',block_reason)
     if os.getenv('PAYMENT_PROVIDER','simulated').lower()=='paga' and not ins.destination_snapshot:
         recipient_id=tx.supplier_id if ins.instruction_type=='PAYOUT' else tx.buyer_id
         recipient=s.get(User,recipient_id) if recipient_id else None
@@ -1479,7 +1586,7 @@ def approve_instruction(iid:str,s:Session=Depends(db),u:User=Depends(current_use
         if not pending:
             origin.status='DECIDED';origin.data={**origin.data,'status':'DECIDED'}
             d=tx_data(tx);d['dispute']={**d.get('dispute',{}),'status':'DECIDED'};save_tx(s,tx,d)
-    reconcile_transaction_completion(s,tx,tx_data(tx));audit(s,u,'FINANCIAL_INSTRUCTION_APPROVED',ins.instruction_type,iid);s.commit();return {'status':'QUEUED'}
+    reconcile_transaction_completion(s,tx,tx_data(tx));audit(s,u,'FINANCIAL_INSTRUCTION_APPROVED',ins.instruction_type,iid);notify(s,tx.buyer_id,'FINANCIAL_INSTRUCTION_APPROVED',tx.id,{'instruction_id':ins.id,'type':ins.instruction_type,'status':'QUEUED'});notify(s,tx.supplier_id,'FINANCIAL_INSTRUCTION_APPROVED',tx.id,{'instruction_id':ins.id,'type':ins.instruction_type,'status':'QUEUED'});s.commit();return {'status':'QUEUED'}
 @app.post('/api/v1/mod/payouts/{iid}/decline')
 @app.post('/api/v1/mod/refunds/{iid}/decline')
 def decline_instruction(iid:str,body:dict,s:Session=Depends(db),u:User=Depends(current_user)):
@@ -1491,17 +1598,21 @@ def decline_instruction(iid:str,body:dict,s:Session=Depends(db),u:User=Depends(c
     tx=s.get(Aggregate,ins.transaction_id);d=tx_data(tx);ins.status='CANCELLED';ins.resolved=True
     existing=d.get('dispute')
     if existing:
-        did=existing['id'];existing={**existing,'status':'MODERATOR_REVIEW','decision_rejected_instruction_id':ins.id,'decision_rejection_reason':reason.strip()}
-        d['dispute']=existing;disp_row=s.get(Dispute,did)
-        if disp_row:disp_row.status='MODERATOR_REVIEW';disp_row.data={**disp_row.data,**existing}
+        did=existing['id'];disp_row=s.get(Dispute,did)
+        previous_decision=(existing.get('decision') or (disp_row.data.get('decision') if disp_row else None))
+        history=list(existing.get('decision_history',[]))
+        if previous_decision:history.append({**previous_decision,'superseded_at':iso(),'superseded_reason':reason.strip(),'superseded_by_instruction_id':ins.id})
+        existing={**existing,'status':'EVIDENCE_WINDOW_CLOSED_ELAPSED','window_closed':True,'decision':None,'decision_history':history,'decision_revision':int(existing.get('decision_revision',0)),'decision_deadline_at':iso(now()+timedelta(hours=72)),'decision_overdue':False,'decision_reopened_at':iso(),'return_required':False,'decision_rejected_instruction_id':ins.id,'decision_rejection_reason':reason.strip()}
+        d['dispute']=existing
+        if disp_row:disp_row.status='EVIDENCE_WINDOW_CLOSED_ELAPSED';disp_row.data={**disp_row.data,**existing}
         if ins.origin_id==did:
-            outcomes=(existing.get('decision') or {}).get('outcomes',[])
-            lot_ids={x.get('lot_id') for x in outcomes if x.get('outcome') in ['RELEASE','REFUND']}
+            outcomes=(previous_decision or {}).get('outcomes',[])
+            lot_ids={x.get('lot_id') for x in outcomes if x.get('outcome') in ['RELEASE','REFUND','RETURN_AND_REFUND']}
         else:
             decision=next((x for x in d.get('decisions',[]) if x.get('id')==ins.origin_id),None)
             ret=next((x for x in d.get('returns',[]) if x.get('id')==ins.origin_id),None)
             if decision:lot_ids={decision.get('lot_id')};decision['review_status']='DISPUTED'
-            elif ret:lot_ids={x.get('lot_id') for x in ret.get('lines',[])};ret['status']='IN_DISPUTE'
+            elif ret:lot_ids={x.get('lot_id') for x in ret.get('lines',[])};ret['refund_authorization_rejected']=True;ret['refund_authorization_rejection_reason']=reason.strip()
             else:lot_ids=set()
     else:
         lot_ids=set()
@@ -1513,7 +1624,7 @@ def decline_instruction(iid:str,body:dict,s:Session=Depends(db),u:User=Depends(c
             if ret:
                 ret['status']='IN_DISPUTE';lot_ids.update(x.get('lot_id') for x in ret.get('lines',[]))
         if lot_ids:
-            did=uid();existing={'id':did,'reason_code':'OTHER','status':'EVIDENCE_WINDOW_OPEN','origin':'MODERATOR','created_at':iso(),'window_ends_at':iso(now()+timedelta(hours=48)),'system_opened':False,'reason':'A senior moderator declined a financial instruction. The affected quantities require a fresh moderator review.','decision_rejected_instruction_id':ins.id,'decision_rejection_reason':reason.strip()};d['dispute']=existing
+            did=uid();existing={'id':did,'reason_code':'OTHER','status':'EVIDENCE_WINDOW_OPEN','origin':'MODERATOR','created_at':iso(),'window_ends_at':iso(now()+timedelta(hours=48)),'decision_deadline_at':iso(now()+timedelta(hours=72)),'system_opened':False,'reason':'A senior moderator declined a financial instruction. The affected quantities require a fresh moderator review.','decision_rejected_instruction_id':ins.id,'decision_rejection_reason':reason.strip()};d['dispute']=existing
             s.add(Dispute(id=did,transaction_id=tx.id,reason_code='OTHER',status='EVIDENCE_WINDOW_OPEN',data=existing))
     if not lot_ids or not any(lot.get('id') in lot_ids for lot in d.get('lots',[])):
         fail(409,'INSTRUCTION_ORIGIN_NOT_RESOLVABLE','The declined instruction cannot be linked to the affected transaction lots; manual reconciliation is required.')
@@ -1522,7 +1633,7 @@ def decline_instruction(iid:str,body:dict,s:Session=Depends(db),u:User=Depends(c
             if lot.get('item_status')!='IN_DISPUTE':lot['pre_dispute_status']=lot.get('item_status')
             lot['item_status']='IN_DISPUTE';lot['money_status']='HELD';lot['is_frozen']=True;lot['freeze_dispute_id']=d['dispute']['id']
     save_tx(s,tx,d);reconcile_transaction_completion(s,tx,d)
-    audit(s,u,'FINANCIAL_INSTRUCTION_DECLINED',ins.instruction_type,iid,{'reason':reason.strip(),'dispute_id':(d.get('dispute') or {}).get('id')});s.commit();return {'status':'CANCELLED','transaction_status':tx.status,'dispute_id':(d.get('dispute') or {}).get('id')}
+    audit(s,u,'FINANCIAL_INSTRUCTION_DECLINED',ins.instruction_type,iid,{'reason':reason.strip(),'dispute_id':(d.get('dispute') or {}).get('id')});notify(s,tx.buyer_id,'FINANCIAL_INSTRUCTION_DECLINED',tx.id,{'instruction_id':ins.id,'status':'CANCELLED','reason':reason.strip(),'dispute_id':(d.get('dispute') or {}).get('id')});notify(s,tx.supplier_id,'FINANCIAL_INSTRUCTION_DECLINED',tx.id,{'instruction_id':ins.id,'status':'CANCELLED','reason':reason.strip(),'dispute_id':(d.get('dispute') or {}).get('id')});s.commit();return {'status':'CANCELLED','transaction_status':tx.status,'dispute_id':(d.get('dispute') or {}).get('id')}
 @app.post('/api/v1/evidence/upload-urls')
 def evidence_upload_urls(body:dict,request:Request,s:Session=Depends(db),u:User=Depends(current_user)):
     tx=tx_get(s,body.get('transaction_id',''),u,staff=u.role in ['MODERATOR','SENIOR_MODERATOR']); purpose=body.get('purpose','GENERAL'); uploads=[]
@@ -1654,6 +1765,20 @@ def reconcile_transaction_completion(s,tx,d=None):
         tx.status='FUNDED'
     tx.data=d;tx.version+=1;tx.updated_at=now()
     return tx.status
+
+def instruction_execution_block_reason(ins, tx, data):
+    dispute=data.get('dispute') or {}
+    if ins.instruction_type=='PAYOUT' and dispute and dispute.get('status') not in ['DECIDED','RESOLVED','CLOSED']:
+        return 'Supplier payouts are blocked while the transaction dispute is unresolved.'
+    if ins.instruction_type=='REFUND' and instruction_classification(ins)=='DISPUTE_RETURN':
+        if ins.origin_id and any(r.get('id')==ins.origin_id for r in data.get('returns',[])):
+            ret=next(r for r in data.get('returns',[]) if r.get('id')==ins.origin_id)
+            if ret.get('status')!='RECEIPT_CONFIRMED' or not ret.get('supplier_receipt_confirmed_at'):
+                return 'Return refund is blocked until supplier receipt is confirmed.'
+        elif dispute and dispute.get('status') not in ['DECIDED','AWAITING_SECOND_APPROVAL']:
+            return 'Dispute refund is blocked until a moderator decision authorizes it.'
+    return None
+
 def instruction_json(x):
     result={'id':x.id,'type':x.instruction_type,'amount_kobo':x.amount_kobo,'status':x.status,'resolved':bool(x.resolved),'retry_of_id':x.retry_of_id,'origin_id':x.origin_id,'created_at':iso(x.created_at)}
     classification=instruction_classification(x)
@@ -1738,7 +1863,7 @@ def resolve_exception(iid:str,body:dict,s:Session=Depends(db),u:User=Depends(cur
     for lot in affected:
         lot['money_status']='HELD';lot['pre_dispute_status']=lot['item_status'];lot['is_frozen']=True;lot['item_status']='IN_DISPUTE'
     if not d.get('dispute'):
-        disp={'id':uid(),'reason_code':'OTHER','status':'EVIDENCE_WINDOW_OPEN','created_at':iso(),'window_ends_at':iso(now()+timedelta(hours=48)),'system_opened':True,'reason':'Financial instruction failed; senior moderator released the reservation.'};d['dispute']=disp
+        disp={'id':uid(),'reason_code':'OTHER','status':'EVIDENCE_WINDOW_OPEN','created_at':iso(),'window_ends_at':iso(now()+timedelta(hours=48)),'decision_deadline_at':iso(now()+timedelta(hours=72)),'system_opened':True,'reason':'Financial instruction failed; senior moderator released the reservation.'};d['dispute']=disp
         s.add(Dispute(id=disp['id'],transaction_id=tx.id,reason_code='OTHER',data=disp))
     else:
         disp={**d['dispute'],'status':'MODERATOR_REVIEW','financial_exception_id':iid,'financial_exception_reason':reason.strip()};d['dispute']=disp
@@ -1798,11 +1923,11 @@ def staff_update(sid:str,body:dict,s:Session=Depends(db),u:User=Depends(current_
     staff.role=body['role'];s.commit();return {'user':user_json(staff)}
 def run_deadlines(s:Session):
     # Safe, idempotent deadline scan. Expiry opens review/dispute; never moves money.
-    opened=0
-    for tx in s.scalars(select(Aggregate).where(Aggregate.status=='FUNDED')).all():
+    opened=0;decision_overdue=0;return_overdue=0
+    for tx in s.scalars(select(Aggregate).where(Aggregate.status.in_(['FUNDED','DISPUTED','SETTLEMENT_PENDING']))).all():
         d=tx_data(tx); deadline=d.get('dispatch_deadline_at')
         if deadline and datetime.fromisoformat(deadline.replace('Z','+00:00'))<now() and any(l.get('item_status')=='AWAITING_DISPATCH' for l in d.get('lots',[])) and not d.get('dispute'):
-            disp={'id':uid(),'reason_code':'NO_DISPATCH','status':'EVIDENCE_WINDOW_OPEN','created_at':iso(),'window_ends_at':iso(now()+timedelta(hours=48)),'system_opened':True};d['dispute']=disp
+            disp={'id':uid(),'reason_code':'NO_DISPATCH','status':'EVIDENCE_WINDOW_OPEN','created_at':iso(),'window_ends_at':iso(now()+timedelta(hours=48)),'decision_deadline_at':iso(now()+timedelta(hours=72)),'system_opened':True};d['dispute']=disp
             for lot in d['lots']:
                 if lot['item_status']=='AWAITING_DISPATCH':lot['pre_dispute_status']=lot['item_status'];lot['item_status']='IN_DISPUTE';lot['is_frozen']=True;lot['freeze_dispute_id']=disp['id']
             s.add(Dispute(id=disp['id'],transaction_id=tx.id,reason_code='NO_DISPATCH',data=disp));save_tx(s,tx,d);opened+=1
@@ -1811,23 +1936,31 @@ def run_deadlines(s:Session):
         for dec in d.get('decisions',[]):
             w=dec.get('evidence_window',{})
             if w.get('status')=='OPEN' and w.get('ends_at') and datetime.fromisoformat(w['ends_at'].replace('Z','+00:00'))<now():w['status']='CLOSED_ELAPSED';save_tx(s,tx,d)
-        if d.get('dispute') and d['dispute'].get('status')=='EVIDENCE_WINDOW_OPEN' and d['dispute'].get('window_ends_at') and datetime.fromisoformat(d['dispute']['window_ends_at'].replace('Z','+00:00'))<now():
+        if d.get('dispute') and d['dispute'].get('status') in ['EVIDENCE_WINDOW_OPEN','AWAITING_EVIDENCE','MODERATOR_REVIEW'] and d['dispute'].get('window_ends_at') and datetime.fromisoformat(d['dispute']['window_ends_at'].replace('Z','+00:00'))<now():
             d['dispute']['status']='EVIDENCE_WINDOW_CLOSED_ELAPSED';d['dispute']['window_closed']=True;disp_row=s.get(Dispute,d['dispute']['id'])
             if disp_row:disp_row.status='EVIDENCE_WINDOW_CLOSED_ELAPSED';disp_row.data={**disp_row.data,'status':'EVIDENCE_WINDOW_CLOSED_ELAPSED','window_closed':True}
             save_tx(s,tx,d)
+        if d.get('dispute') and d['dispute'].get('decision_deadline_at') and not d['dispute'].get('decision_overdue') and datetime.fromisoformat(d['dispute']['decision_deadline_at'].replace('Z','+00:00'))<now() and not d['dispute'].get('decision'):
+            d['dispute']['decision_overdue']=True;d['dispute']['decision_overdue_at']=iso();decision_overdue+=1;disp_row=s.get(Dispute,d['dispute']['id'])
+            if disp_row:disp_row.data={**disp_row.data,'decision_overdue':True,'decision_overdue_at':d['dispute']['decision_overdue_at']}
+            for staff in s.scalars(select(User).where(User.role.in_(['MODERATOR','SENIOR_MODERATOR']))).all():notify(s,staff.id,'DISPUTE_DECISION_OVERDUE',tx.id,{'dispute_id':d['dispute']['id'],'reference':tx.reference,'deadline_at':d['dispute']['decision_deadline_at']})
+            audit(s,None,'DISPUTE_DECISION_OVERDUE','DISPUTE',d['dispute']['id'],{'deadline_at':d['dispute']['decision_deadline_at']});save_tx(s,tx,d)
         for ret in d.get('returns',[]):
             deadline=ret.get('confirmation_deadline_at')
-            if ret.get('status')=='HANDOVER_RECORDED' and deadline and datetime.fromisoformat(deadline.replace('Z','+00:00'))<now() and not d.get('dispute'):
-                disp={'id':uid(),'reason_code':'RETURN_CONFIRMATION_OVERDUE','status':'EVIDENCE_WINDOW_OPEN','created_at':iso(),'window_ends_at':iso(now()+timedelta(hours=48)),'system_opened':True};d['dispute']=disp;ret['status']='DISPUTED'
-                for line in ret.get('lines',[]):
-                    lot=next((x for x in d['lots'] if x['id']==line['lot_id']),None)
-                    if lot:lot['pre_dispute_status']=lot['item_status'];lot['item_status']='IN_DISPUTE';lot['is_frozen']=True;lot['freeze_dispute_id']=disp['id']
-                s.add(Dispute(id=disp['id'],transaction_id=tx.id,reason_code=disp['reason_code'],data=disp));opened+=1;save_tx(s,tx,d)
+            if ret.get('status')=='HANDOVER_RECORDED' and deadline and datetime.fromisoformat(deadline.replace('Z','+00:00'))<now() and not ret.get('return_confirmation_overdue'):
+                ret['return_confirmation_overdue']=True;ret['return_confirmation_overdue_at']=iso();return_overdue+=1
+                if d.get('dispute'):
+                    d['dispute']['return_confirmation_overdue']=True;d['dispute']['return_confirmation_overdue_at']=ret['return_confirmation_overdue_at']
+                    disp_row=s.get(Dispute,d['dispute'].get('id'))
+                    if disp_row:disp_row.data={**disp_row.data,'return_confirmation_overdue':True,'return_confirmation_overdue_at':ret['return_confirmation_overdue_at']}
+                for recipient in [tx.buyer_id,tx.supplier_id]:notify(s,recipient,'RETURN_CONFIRMATION_OVERDUE',tx.id,{'return_id':ret['id'],'reference':tx.reference,'deadline_at':deadline})
+                for staff in s.scalars(select(User).where(User.role.in_(['MODERATOR','SENIOR_MODERATOR']))).all():notify(s,staff.id,'RETURN_CONFIRMATION_OVERDUE',tx.id,{'return_id':ret['id'],'reference':tx.reference,'deadline_at':deadline})
+                audit(s,None,'RETURN_CONFIRMATION_OVERDUE','RETURN',ret['id'],{'deadline_at':deadline});save_tx(s,tx,d)
         for lot in d.get('lots',[]):
             deadline=lot.get('inspection_deadline_at')
             if lot.get('item_status')=='RECEIPT_CONFIRMED' and deadline and datetime.fromisoformat(deadline.replace('Z','+00:00'))<now() and not d.get('dispute'):
-                disp={'id':uid(),'reason_code':'INSPECTION_PERIOD_EXPIRED','status':'EVIDENCE_WINDOW_OPEN','created_at':iso(),'window_ends_at':iso(now()+timedelta(hours=48)),'system_opened':True};d['dispute']=disp;lot['pre_dispute_status']=lot['item_status'];lot['item_status']='IN_DISPUTE';lot['is_frozen']=True;lot['freeze_dispute_id']=disp['id'];s.add(Dispute(id=disp['id'],transaction_id=tx.id,reason_code=disp['reason_code'],data=disp));opened+=1;save_tx(s,tx,d);break
-    s.commit();return {'disputes_opened':opened,'meta':{'server_time':iso()}}
+                disp={'id':uid(),'reason_code':'INSPECTION_PERIOD_EXPIRED','status':'EVIDENCE_WINDOW_OPEN','created_at':iso(),'window_ends_at':iso(now()+timedelta(hours=48)),'decision_deadline_at':iso(now()+timedelta(hours=72)),'system_opened':True};d['dispute']=disp;lot['pre_dispute_status']=lot['item_status'];lot['item_status']='IN_DISPUTE';lot['is_frozen']=True;lot['freeze_dispute_id']=disp['id'];s.add(Dispute(id=disp['id'],transaction_id=tx.id,reason_code=disp['reason_code'],data=disp));opened+=1;save_tx(s,tx,d);break
+    s.commit();return {'disputes_opened':opened,'decision_deadlines_escalated':decision_overdue,'return_confirmations_escalated':return_overdue,'meta':{'server_time':iso()}}
 @app.get('/openapi.json')
 def openapi_alias():return app.openapi()
 def paga_amount_to_kobo(value):
@@ -1952,6 +2085,7 @@ def process_paga_events(s:Session):
 
 def freeze_instruction_unknown(s,ins,tx,d,reason):
     ins.status='UNKNOWN';ins.provider_stage='UNKNOWN';ins.provider_response={**(ins.provider_response or {}),'last_error':reason}
+    notify(s,tx.buyer_id,'FINANCIAL_INSTRUCTION_STATUS_CHANGED',tx.id,{'instruction_id':ins.id,'status':'UNKNOWN'});notify(s,tx.supplier_id,'FINANCIAL_INSTRUCTION_STATUS_CHANGED',tx.id,{'instruction_id':ins.id,'status':'UNKNOWN'})
     for lot in d.get('lots',[]):
         if lot.get('money_status') in ['RELEASE_PENDING','REFUND_PENDING']:
             lot['is_frozen']=True;lot['freeze_reason']='PROVIDER_UNKNOWN'
@@ -1980,7 +2114,17 @@ def finalize_instruction_success(s,ins,tx,d,provider_mode):
         for lot in d['lots']:
             if lot['id'] in refunded_ids and lot.get('money_status')=='REFUND_PENDING' and lot.get('item_status') in ['IN_DISPUTE','RETURN_RECEIPT_CONFIRMED']:
                 lot['money_status']='REFUNDED';lot['item_status']='SETTLED_REFUNDED';lot['is_frozen']=False;lot.pop('freeze_reason',None);lot.pop('freeze_dispute_id',None)
-    save_tx(s,tx,d);reconcile_transaction_completion(s,tx,d);audit(s,None,'FINANCIAL_INSTRUCTION_SETTLED','INSTRUCTION',ins.id,{'provider_mode':provider_mode,'provider_reference':ins.provider_reference})
+        dispute=d.get('dispute') or {}
+        if instruction_classification(ins)=='DISPUTE_RETURN' and dispute and dispute.get('status') in ['DECIDED','RETURN_RECEIPT_CONFIRMED','AWAITING_SECOND_APPROVAL']:
+            other_dispute_refunds=s.scalars(select(Instruction).where(Instruction.transaction_id==tx.id,Instruction.instruction_type=='REFUND',Instruction.refund_classification=='DISPUTE_RETURN',Instruction.id!=ins.id)).all()
+            outstanding=any(not instruction_terminal(x) for x in other_dispute_refunds)
+            if not outstanding:
+                dispute['status']='RESOLVED';dispute['refund_confirmed_at']=iso();d['dispute']=dispute
+                disp_row=s.get(Dispute,dispute.get('id'))
+                if disp_row:disp_row.status='RESOLVED';disp_row.data={**disp_row.data,'status':'RESOLVED','refund_confirmed_at':dispute['refund_confirmed_at']}
+                notify(s,tx.buyer_id,'DISPUTE_REFUND_SETTLED',tx.id,{'instruction_id':ins.id,'status':'SUCCEEDED'})
+                notify(s,tx.supplier_id,'DISPUTE_REFUND_SETTLED',tx.id,{'instruction_id':ins.id,'status':'SUCCEEDED'})
+    save_tx(s,tx,d);reconcile_transaction_completion(s,tx,d);audit(s,None,'FINANCIAL_INSTRUCTION_SETTLED','INSTRUCTION',ins.id,{'provider_mode':provider_mode,'provider_reference':ins.provider_reference});notify(s,tx.buyer_id,'FINANCIAL_INSTRUCTION_SETTLED',tx.id,{'instruction_id':ins.id,'type':ins.instruction_type,'status':'SUCCEEDED'});notify(s,tx.supplier_id,'FINANCIAL_INSTRUCTION_SETTLED',tx.id,{'instruction_id':ins.id,'type':ins.instruction_type,'status':'SUCCEEDED'})
 
 def restore_paga_subsidiary_funds(s,client,ins,tx,d,account,reason):
     """Return a failed bank-transfer amount from the Paga business balance to its source subaccount.
@@ -2023,6 +2167,7 @@ def run_paga_financial(s:Session):
     processed=[];pending=0
     for ins in s.scalars(select(Instruction).where(Instruction.status=='QUEUED').order_by(Instruction.created_at).limit(50)).all():
         tx=s.get(Aggregate,ins.transaction_id);d=tx_data(tx)
+        if instruction_execution_block_reason(ins,tx,d):pending+=1;continue
         active=s.scalar(select(Instruction).where(Instruction.transaction_id==ins.transaction_id,Instruction.id!=ins.id,Instruction.status.in_(['SUBMITTED','UNKNOWN'])).limit(1))
         if active:pending+=1;continue
         account=s.scalar(select(PagaSubsidiaryAccount).where(PagaSubsidiaryAccount.transaction_id==tx.id))
@@ -2364,15 +2509,16 @@ def run_financial(s:Session):
     if scenario not in ['PENDING','SUCCESS','FAILED','UNKNOWN']:scenario='PENDING'
     for ins in s.scalars(select(Instruction).where(Instruction.status=='QUEUED')).all():
         tx=s.get(Aggregate,ins.transaction_id);d=tx_data(tx)
+        if instruction_execution_block_reason(ins,tx,d):continue
         if scenario=='PENDING':continue
         if scenario=='UNKNOWN':
-            ins.status='UNKNOWN'
+            ins.status='UNKNOWN';notify(s,tx.buyer_id,'FINANCIAL_INSTRUCTION_STATUS_CHANGED',tx.id,{'instruction_id':ins.id,'status':'UNKNOWN'});notify(s,tx.supplier_id,'FINANCIAL_INSTRUCTION_STATUS_CHANGED',tx.id,{'instruction_id':ins.id,'status':'UNKNOWN'})
             for lot in d.get('lots',[]):
                 if lot.get('money_status') in ['RELEASE_PENDING','REFUND_PENDING']:lot['is_frozen']=True;lot.setdefault('freeze_reason','PROVIDER_UNKNOWN')
             save_tx(s,tx,d);processed.append({'id':ins.id,'status':'UNKNOWN'});continue
         if scenario=='FAILED':
             # F5: definitive failure is recorded; reservation and authorisation remain until senior F10.
-            ins.status='FAILED';audit(s,None,'INSTRUCTION_FAILED','INSTRUCTION',ins.id,{'provider_mode':'SIMULATED'});processed.append({'id':ins.id,'status':'FAILED'});continue
+            ins.status='FAILED';audit(s,None,'INSTRUCTION_FAILED','INSTRUCTION',ins.id,{'provider_mode':'SIMULATED'});notify(s,tx.buyer_id,'FINANCIAL_INSTRUCTION_STATUS_CHANGED',tx.id,{'instruction_id':ins.id,'status':'FAILED'});notify(s,tx.supplier_id,'FINANCIAL_INSTRUCTION_STATUS_CHANGED',tx.id,{'instruction_id':ins.id,'status':'FAILED'});processed.append({'id':ins.id,'status':'FAILED'});continue
         finalize_instruction_success(s,ins,tx,d,'SIMULATED');processed.append({'id':ins.id,'status':'SUCCEEDED'})
     s.commit();return {'processed':processed,'scenario':scenario,'mode':'SIMULATED'}
 @app.get('/api/v1/transactions/{tid}/ledger')

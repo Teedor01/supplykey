@@ -14,15 +14,19 @@ export function buildModeratorActionRequest({ caseItem, detail, action, fields =
   let path;
   let body;
 
-  if (isDispute && action === 'decision') {
+  if (isDispute && action === 'authorize_refund') {
+    path = `/mod/disputes/${caseItem.id}/authorize-refund`;
+    body = {};
+  } else if (isDispute && action === 'decision') {
     const outcome = fields.outcome || 'NO_FINANCIAL_ACTION';
-    body = { outcomes: [{ item_id: caseItem.item_id, lot_id: caseItem.lot_id,
-      quantity: Number(fields.quantity || caseItem.quantity || 1), outcome,
+    const affected = caseItem.affected_lots?.length ? caseItem.affected_lots : [{item_id:caseItem.item_id,lot_id:caseItem.lot_id,quantity:Number(fields.quantity || caseItem.quantity || 1)}];
+    body = { outcomes: affected.map(lot => ({ item_id: lot.item_id, lot_id: lot.lot_id,
+      quantity: Number(lot.quantity || fields.quantity || caseItem.quantity || 1), outcome,
       ...(outcome === 'REDISPATCH_OR_REPLACEMENT' ? {
         consent_statement_ids: detail?.consent_statement_ids || detail?.dispute?.consent_statement_ids || caseItem.consent_statement_ids,
         new_dispatch_deadline_at: isoDate(fields.newDispatchDeadlineAt, 'New dispatch deadline')
       } : {})
-    }], reason: fields.reason, evidence_ids_considered: fields.evidenceIdsConsidered || [] };
+    })), reason: fields.reason, evidence_ids_considered: fields.evidenceIdsConsidered || [] };
     path = `/mod/disputes/${caseItem.id}/decision`;
   } else if (action === 'confirm' && !isDispute) {
     path = `/mod/decisions/${caseItem.id}/confirm`;

@@ -122,7 +122,7 @@ If Paga does not approve this use case, evaluate a licensed escrow/holding partn
 
 ## Implementation status note
 
-This document defines the intended product or technical behaviour. It is not, by itself, evidence that the current application implements or has passed tests for every requirement. The current implementation status, verified test results and known defects are recorded in the repository-root `STATUS_REPORT.md`. In particular, the 72-hour moderator-resolution deadline is specified but not yet implemented; the frontend simulator checkout is missing; return/refund defects remain open; and browser/PostgreSQL verification has not been completed.
+This document defines intended behaviour; current verification is recorded in the repository-root `STATUS_REPORT.md`. Refund classification and role-scoped financial visibility, settlement-pending state and provider-confirmed completion are implemented and covered by the current SQLite/backend and Node test suites. The 72-hour moderator-resolution deadline remains specified but is not implemented in the runtime. Browser, PostgreSQL migration and live Paga settlement verification remain outstanding.
 
 
 ## Current implementation and verification status
@@ -132,3 +132,16 @@ The backend now has a local simulated provider with `SUCCESS`, `FAILURE`, `PENDI
 The frontend checkout screen for this simulator has not been built. The simulator is not a Paga transaction and does not move real money.
 
 The Paga adapter code has not been successfully exercised against SupplyKey's own Sandbox credentials. The previous attempt was rejected with `Account not sufficiently verified`; do not retry until Paga confirms the account is enabled. The latest project status and known implementation defects are recorded in the repository-root `STATUS_REPORT.md`.
+
+
+## 10. Verified bank beneficiaries and immutable transfer destinations
+
+Paga bank destinations are selected from the provider's `getBanks` directory. SupplyKey validates a ten-digit Nigerian NUBAN through `validateDepositToBank`, presents `destinationAccountHolderNameAtBank`, and requires the user to confirm the exact returned name and attest that they own or are authorised to receive funds into the account. Verification is pending until this confirmation step succeeds.
+
+Account numbers are encrypted with `PAYOUT_ENCRYPTION_KEY`. API profile responses return masked account details only. Changing an already verified destination starts a 24-hour cooldown for new financial instructions and produces an in-app notification and audit event. Already-authorised instructions retain the immutable encrypted destination snapshot captured at instruction creation; the worker never substitutes the user's current profile destination.
+
+Paga's Business API transfer destination is expressed as the bank UUID plus account number; this integration does not use a provider-side persistent beneficiary ID. The local immutable destination snapshot is the binding for a financial instruction. The worker revalidates the destination immediately before `depositToBank` and requires the provider-returned account holder name to match the confirmed beneficiary.
+
+Legacy queued Paga instructions without a destination snapshot are moved back to `PENDING_APPROVAL` by migration 003 and require explicit senior reapproval after a beneficiary is confirmed. `UNKNOWN` and already-submitted instructions are not rebound; they remain subject to provider reconciliation.
+
+`PAYOUT_ENCRYPTION_KEY` must be a separate random production secret of at least 32 characters and must differ from `SUPPLYKEY_SECRET`. Account verification and confirmation routes have process-local rate limits; multi-replica deployments must also configure distributed gateway/WAF rate limiting.

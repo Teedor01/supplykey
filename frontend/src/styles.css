@@ -25,3 +25,7 @@
 .paga-transfer-details{display:grid;gap:5px;margin-top:10px;padding:11px;background:#fff;border:1px solid #dce7ef;border-radius:7px}.paga-transfer-details strong{font:700 18px Manrope;color:#183b59;letter-spacing:1px}.paga-transfer-details .text-link{justify-self:start;border:0;background:none;padding:2px 0;color:#276a9c;font-size:10px;cursor:pointer}
 
 .evidence-preview-link{display:block;margin-top:8px;color:#2867a6;font-size:9px;text-decoration:none}.evidence-preview-image{display:block;max-width:min(100%,420px);max-height:280px;object-fit:contain;border:1px solid #e2e8ee;border-radius:6px;background:#fff}.evidence-preview-document{margin-top:8px}.evidence-preview-document iframe{display:block;width:min(100%,560px);height:360px;border:1px solid #dfe6ec;border-radius:6px;background:#fff}.evidence-preview-document a{display:inline-block;margin-top:6px;color:#2867a6;font-size:9px}
+
+.checkbox-field{display:flex;align-items:flex-start;gap:10px;margin:12px 0;color:var(--muted,#667085);font-size:13px;line-height:1.45}
+.checkbox-field input{width:16px;height:16px;flex:0 0 16px;margin-top:2px;accent-color:var(--primary,#176b57)}
+.confirm-beneficiary{display:grid;gap:12px;margin-top:16px;padding-top:16px;border-top:1px solid var(--border,#e5e7eb)}

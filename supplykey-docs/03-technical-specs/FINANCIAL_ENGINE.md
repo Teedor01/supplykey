@@ -38,6 +38,7 @@ How money is allocated, journalled, released, refunded, retried and reconciled. 
 | Refund succeeded (F4) | `REFUND_SENT` | `BUYER_REFUNDABLE` | `PROVIDER_CLEARING` |
 | Authorisation released after a human decision (F8, F10) | `REVERSAL` | `SUPPLIER_PAYABLE` or `BUYER_REFUNDABLE` | `HELD_FUNDS` |
 | Duplicate collection (P9) | `PAYMENT_RECEIVED` | `PROVIDER_CLEARING` | `UNALLOCATED_OVERPAYMENT` |
+| Verified overpayment above agreed amount | `OVERPAYMENT_RECEIVED` | `PROVIDER_CLEARING` | `BUYER_REFUNDABLE` |
 | Correction | `ADJUSTMENT` | as needed, linked to the original | as needed |
 
 Each journal shares a `journal_id`, carries `transaction_id`, `item_id` and `lot_id`, and balances to zero (database trigger). Ledger rows are append-only.
@@ -67,7 +68,11 @@ Example: fee ₦100 = `10000` kobo on a 3-unit line. Units 1-2 get `6666`, unit 
 
 Consequences: a moderator or client cannot name an amount for quantity-based `RELEASE` or `REFUND`; a supplied `amount_kobo` must equal the computed value or the request fails with `422 AMOUNT_MUST_MATCH_ALLOCATION`; `decision_outcomes.amount_kobo` stores the computed value and a database trigger rejects any other; `payout_items` and `refund_items` have the same trigger. Amount-level settlement of a single unit (price reduction, partial compensation) is not supported and would need an explicitly approved adjustment mechanism with its own outcome, money status and tests ([OD-14](../06-delivery/OPEN_DECISIONS.md)). A decision over part of a lot first splits the lot by quantity.
 
-### 4.2 Instruction creation
+### 4.2 Refund classification and visibility
+
+Refund instructions are separately classified as `EXCESS_PAYMENT` or `DISPUTE_RETURN`. An excess-payment refund is the buyer's verified payment amount above the agreed transaction total; it is not supplier revenue or supplier payable. Its amount, status, reference and history are buyer/moderator-only. A `DISPUTE_RETURN` refund follows a rejected-goods return or moderator dispute decision; both buyer and supplier may see its reason/progress/outcome. Return refunds cannot be queued until the supplier confirms physical receipt, and moderator approval remains required.
+
+### 4.3 Instruction creation
 
 | Instruction | Created by | Idempotency key | Amount |
 |---|---|---|---|
@@ -78,15 +83,15 @@ Rules:
 
 - Created only inside the transition transaction, never from a controller, and only through the creation guard in [State Machine 4.8](TRANSACTION_STATE_MACHINE.md#48-payout-and-refund-instructions-f).
 - `origin_type` and `origin_id` are mandatory: `ACCEPTANCE_CONFIRMATION`, `RETURN_RECEIPT_CONFIRMATION` or `DISPUTE_DECISION`.
-- One payout and at most one refund per approving action, covering all its lots, so a threshold cannot be avoided by splitting.
+- One payout and at most one refund per approving action, covering all its lots, so a threshold cannot be avoided by splitting. A definitive failed instruction can be retried only after provider failure/restoration is established; the new instruction links to the prior instruction through `retry_of_id` and a unique idempotency key. `UNKNOWN` outcomes cannot be retried until reconciled. A late success callback that conflicts with a resolved failure freezes the transaction and requires provider status reconciliation rather than issuing a second transfer.
 - Partial unique indexes on `payout_items(lot_id)` and `refund_items(lot_id)` for non-terminal or `SUCCEEDED` parents, plus the cross-table trigger, make a second or conflicting instruction impossible.
 - The outbox worker submits `QUEUED` instructions using the stored key as the provider reference, then verifies by status query before `SUCCEEDED`. A global kill switch keeps instructions `QUEUED`.
 
-### 4.3 Freeze and authorisation
+### 4.4 Freeze and authorisation
 
 The rule is defined once in [State Machine 2.4](TRANSACTION_STATE_MACHINE.md#24-lot-money-status-and-freezes). In short, a lot frozen by a dispute accepts only the instruction that executes an approved decision of that dispute (recorded after the evidence window, amount computed). A `PROVIDER_UNKNOWN` or `RECONCILIATION` freeze blocks creation and submission with no exception. The dispute freeze stays until the instruction succeeds, so unrelated instructions on disputed quantities remain impossible while the approved one executes.
 
-### 4.4 Approval threshold
+### 4.5 Approval threshold
 
 - An instruction is `PENDING_APPROVAL` when `amount_kobo >= high_value_threshold_kobo` (`50000000` kobo, ₦500,000, PROPOSED, [OD-07](../06-delivery/OPEN_DECISIONS.md)) or the decision has an acknowledged suspicious-evidence flag. Exactly at the threshold requires approval; one kobo below does not.
 - The approver must be a `SENIOR_MODERATOR` and different from the moderator who made the decision (`SELF_APPROVAL_NOT_ALLOWED`). For a return refund with no moderator decision, any senior moderator may approve.
@@ -197,4 +202,4 @@ Every transition has a defined financial effect: either none, or a path through 
 
 ## Implementation status note
 
-This document defines the intended product or technical behaviour. It is not, by itself, evidence that the current application implements or has passed tests for every requirement. The current implementation status, verified test results and known defects are recorded in the repository-root `STATUS_REPORT.md`. In particular, the 72-hour moderator-resolution deadline is specified but not yet implemented; the frontend simulator checkout is missing; return/refund defects remain open; and browser/PostgreSQL verification has not been completed.
+This document defines intended behaviour; current verification is recorded in the repository-root `STATUS_REPORT.md`. Refund classification and role-scoped financial visibility, settlement-pending state and provider-confirmed completion are implemented and covered by the current SQLite/backend and Node test suites. The 72-hour moderator-resolution deadline remains specified but is not implemented in the runtime. Browser, PostgreSQL migration and live Paga settlement verification remain outstanding.

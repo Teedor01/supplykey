@@ -32,6 +32,24 @@ test('dispute decision sends item, lot, quantity, outcome and evidence considere
   assert.equal(req.headers['If-Match'], '13');
 });
 
+test('Paga return refund authorization is a separate post-receipt moderator action', () => {
+  const req = buildModeratorActionRequest({caseItem:dispute,detail,action:'authorize_refund',fields:{}});
+  assert.equal(req.path,`/mod/disputes/${dispute.id}/authorize-refund`);
+  assert.deepEqual(req.body,{});
+});
+
+test('dispute decision covers every frozen quantity from the case queue', () => {
+  const multi = {...dispute, affected_lots:[
+    {item_id:'item-1',lot_id:'lot-1',quantity:2},
+    {item_id:'item-2',lot_id:'lot-2',quantity:1}
+  ]};
+  const req = buildModeratorActionRequest({caseItem:multi,detail,action:'decision',fields:{outcome:'RETURN_AND_REFUND',reason:'Both rejected quantities require return before refund.',evidenceIdsConsidered:['proof']}});
+  assert.deepEqual(req.body.outcomes,[
+    {item_id:'item-1',lot_id:'lot-1',quantity:2,outcome:'RETURN_AND_REFUND'},
+    {item_id:'item-2',lot_id:'lot-2',quantity:1,outcome:'RETURN_AND_REFUND'}
+  ]);
+});
+
 test('redispatch dispute decision requires and serializes a valid deadline', () => {
   const req = buildModeratorActionRequest({ caseItem: dispute, detail, action: 'decision', fields: { outcome: 'REDISPATCH_OR_REPLACEMENT', newDispatchDeadlineAt: '2026-11-22T10:30', evidenceIdsConsidered: ['proof'], reason: 'Both parties have consented to a replacement.' } });
   assert.deepEqual(req.body.outcomes[0].consent_statement_ids, ['buyer-consent', 'supplier-consent']);
