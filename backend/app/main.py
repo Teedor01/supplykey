@@ -11,7 +11,7 @@ from starlette.middleware.base import BaseHTTPMiddleware
 from fastapi.exceptions import RequestValidationError
 from starlette.concurrency import run_in_threadpool
 from sqlalchemy.orm import Session
-from sqlalchemy import select, func
+from sqlalchemy import select, func, update
 from .db import (SessionLocal, init_db, User, SessionToken, Aggregate, Payment, Idempotency, Audit, Evidence, Instruction, Dispute, Notification, Journal, LedgerEntry, ProviderEvent, RefreshSession, PagaSubsidiaryAccount, ProviderEventProcessing, now)
 from .providers.paga import PagaClient, PagaConfig, PagaError, PagaUnknownOutcome
 from .providers import simulated as sim
@@ -39,8 +39,8 @@ async def lifespan(app):
     if APP_ENV=='production' and (not os.getenv('WORKER_SECRET') or WORKER_SECRET=='dev-worker-secret'):
         raise RuntimeError('WORKER_SECRET must be set before production startup.')
     paga_mode=os.getenv('PAGA_MODE','disabled').lower()
-    if APP_ENV=='production' and (not os.getenv('PAYOUT_ENCRYPTION_KEY') or len(os.getenv('PAYOUT_ENCRYPTION_KEY',''))<32):
-        raise RuntimeError('PAYOUT_ENCRYPTION_KEY must be a separate random secret of at least 32 characters in production.')
+    if APP_ENV=='production' and (not os.getenv('PAYOUT_ENCRYPTION_KEY') or len(os.getenv('PAYOUT_ENCRYPTION_KEY',''))<32 or os.getenv('PAYOUT_ENCRYPTION_KEY')==os.getenv('SUPPLYKEY_SECRET')):
+        raise RuntimeError('PAYOUT_ENCRYPTION_KEY must be a separate random secret of at least 32 characters and must differ from SUPPLYKEY_SECRET in production.')
     if paga_mode=='live':
         if os.getenv('PAGA_CONDITIONAL_CUSTODY_APPROVED','false').lower()!='true' or not os.getenv('PAGA_LEGAL_APPROVAL_REFERENCE'):
             raise RuntimeError('Paga live mode is blocked until conditional-custody approval and Nigerian legal approval are recorded.')
@@ -56,8 +56,8 @@ app.add_middleware(CORSMiddleware,allow_origins=os.getenv('CORS_ORIGINS','http:/
 _rate_windows={};_rate_lock=threading.Lock()
 class ApiRateLimitMiddleware(BaseHTTPMiddleware):
     async def dispatch(self,request,call_next):
-        if request.url.path.startswith('/api/v1/auth/') or request.url.path.endswith('/payments'):
-            key=(request.client.host if request.client else 'unknown',request.url.path);now_m=time.monotonic();limit=10 if '/auth/' in request.url.path else 20
+        if request.url.path.startswith('/api/v1/auth/') or request.url.path.endswith('/payments') or request.url.path in ['/api/v1/payments/paga/banks','/api/v1/me/payout-account','/api/v1/me/payout-account/confirm']:
+            key=(request.client.host if request.client else 'unknown',request.url.path);now_m=time.monotonic();limit=10 if '/auth/' in request.url.path else (10 if 'payout-account' in request.url.path or 'paga/banks' in request.url.path else 20)
             with _rate_lock:
                 hits=[t for t in _rate_windows.get(key,[]) if now_m-t<60]
                 if len(hits)>=limit:return JSONResponse(status_code=429,headers={'Retry-After':'60'},content={'error':{'code':'RATE_LIMITED','message':'Too many requests. Try again later.','details':{}},'meta':{'server_time':iso()}})
@@ -363,11 +363,26 @@ def logout(request:Request,response:Response,s:Session=Depends(db),u:User=Depend
 def user_json(u): return {'id':u.id,'email':u.email,'phone':u.phone,'display_name':u.display_name,'role':u.role,'verified':u.verified}
 def public_payout_account(account):
     if not account:return None
-    return {k:v for k,v in account.items() if k not in ['account_number_enc','account_number']}
+    # Explicit allow-list: nested pending-account ciphertext, confirmation hashes,
+    # raw account numbers and provider internals must never reach the browser.
+    keys=('bank_uuid','bank_code','bank_name','masked_account_number','account_name',
+          'verified','verified_at','effective_at','mode','validation_fee_kobo',
+          'change_pending','reverification_required','pending_bank_name','pending_masked_account_number',
+          'pending_account_name','pending_effective_at')
+    result={k:account[k] for k in keys if k in account}
+    if account.get('verified') and str(account.get('mode','')).startswith('PAGA_') and (not account.get('account_version') or not account.get('destination_fingerprint')):
+        result['verified']=False
+        result['reverification_required']=True
+    if result.get('change_pending') and result.get('effective_at'):
+        try:
+            if datetime.fromisoformat(result['effective_at'].replace('Z','+00:00'))<=now():
+                result['change_pending']=False
+        except (ValueError,AttributeError):pass
+    return result
 
 def payout_cipher():
     configured=os.getenv('PAYOUT_ENCRYPTION_KEY','')
-    if APP_ENV=='production' and len(configured)<32:raise RuntimeError('PAYOUT_ENCRYPTION_KEY must be configured in production.')
+    if APP_ENV=='production' and (len(configured)<32 or configured==os.getenv('SUPPLYKEY_SECRET')):raise RuntimeError('PAYOUT_ENCRYPTION_KEY must be a separate secret of at least 32 characters in production.')
     material=configured or SECRET.decode('utf-8','ignore')
     return Fernet(base64.urlsafe_b64encode(hashlib.sha256(material.encode()).digest()))
 
@@ -376,6 +391,27 @@ def decrypt_payout_account(account):
     if not encrypted:raise ValueError('Verified payout account has no encrypted account number.')
     try:return payout_cipher().decrypt(encrypted.encode()).decode()
     except InvalidToken as exc:raise ValueError('Payout account encryption key does not match the stored account.') from exc
+
+def verified_destination_snapshot(user:User):
+    account=user.payout_account or {}
+    if not account.get('verified') or not account.get('account_number_enc') or not account.get('bank_uuid') or not account.get('account_version') or not account.get('destination_fingerprint'):
+        return None
+    effective=account.get('effective_at')
+    if effective:
+        try:
+            if datetime.fromisoformat(effective.replace('Z','+00:00'))>now():return None
+        except (ValueError,AttributeError):return None
+    # Snapshot is immutable for this instruction. Encrypted account number is
+    # copied as ciphertext; plaintext never enters the database or audit trail.
+    return {
+        'bank_uuid':account['bank_uuid'],'bank_code':account.get('bank_code'),
+        'bank_name':account.get('bank_name'),'account_number_enc':account['account_number_enc'],
+        'masked_account_number':account.get('masked_account_number'),
+        'account_name':account.get('account_name'),'verified_at':account.get('verified_at'),
+        'account_version':account.get('account_version'),
+        'destination_fingerprint':account.get('destination_fingerprint'),
+        'mode':account.get('mode')
+    }
 
 @app.get('/api/v1/me')
 def me(u:User=Depends(current_user)): return {'user':user_json(u),'profile':u.profile,'payout_account':public_payout_account(u.payout_account)}
@@ -397,6 +433,7 @@ def get_cached_paga_banks(client):
         result=client.get_banks()
         if str(result.get('responseCode'))!='0':raise PagaError('Paga did not return a confirmed bank directory.')
         banks=result.get('banks',[])
+        if not isinstance(banks,list) or not banks:raise PagaError('Paga returned an empty or invalid bank directory.')
         _PAGA_BANK_CACHE.update({'expires_at':time.time()+7*24*60*60,'mode':mode,'banks':banks})
         return banks
 
@@ -408,23 +445,73 @@ def paga_banks(u:User=Depends(current_user)):
 
 @app.put('/api/v1/me/payout-account')
 def payout_account(body:dict,s:Session=Depends(db),u:User=Depends(current_user)):
-    account_number=str(body.get('account_number',''))
-    if not account_number.isdigit() or len(account_number)!=10:fail(400,'VALIDATION_FAILED','A 10-digit account number is required.')
+    account_number=str(body.get('account_number','')).strip()
+    if not account_number.isdigit() or len(account_number)!=10:fail(400,'VALIDATION_FAILED','A Nigerian 10-digit NUBAN account number is required.')
     provider=os.getenv('PAYMENT_PROVIDER','simulated').lower()
-    if provider=='paga':
-        try:
-            client=PagaClient();banks={'banks':get_cached_paga_banks(client)}
-            requested=str(body.get('bank_uuid') or body.get('bank_code') or '').strip().lower()
-            bank=next((b for b in banks.get('banks',[]) if requested in [str(b.get('uuid','')).lower(),str(b.get('interInstitutionCode','')).lower(),str(b.get('sortCode','')).lower()]),None)
-            if not bank:fail(422,'BANK_NOT_SUPPORTED','Select a bank returned by Paga.')
-            validation=client.validate_bank_account('SKVAL'+secrets.token_hex(10).upper(),100000,bank['uuid'],account_number)
-            if str(validation.get('responseCode'))!='0':fail(422,'BANK_ACCOUNT_NOT_VERIFIED',validation.get('message') or 'Paga could not verify this bank account.')
-            encrypted=payout_cipher().encrypt(account_number.encode()).decode()
-            u.payout_account={'bank_uuid':bank['uuid'],'bank_code':bank.get('interInstitutionCode') or bank.get('sortCode'),'bank_name':bank.get('name'),'account_number_enc':encrypted,'masked_account_number':'••••'+account_number[-4:],'account_name':validation.get('destinationAccountHolderNameAtBank') or u.display_name,'verified':True,'verified_at':iso(),'effective_at':iso(),'mode':client.config.provider_mode,'validation_fee_kobo':int((Decimal(str(validation.get('fee') or 0))+Decimal(str(validation.get('vat') or 0)))*100)}
-        except PagaError as exc:fail(502,'PAGA_ACCOUNT_VALIDATION_FAILED',str(exc))
-    else:
-        u.payout_account={'bank_code':str(body.get('bank_code') or ''),'masked_account_number':'••••'+account_number[-4:],'account_name':u.display_name,'verified':False,'effective_at':None,'mode':'SIMULATED'}
-    s.commit();return {'payout_account':public_payout_account(u.payout_account)}
+    if provider!='paga':fail(503,'BANK_VERIFICATION_UNAVAILABLE','Real bank verification requires PAYMENT_PROVIDER=paga and an enabled Paga environment.')
+    try:
+        client=PagaClient();banks=get_cached_paga_banks(client)
+        requested=str(body.get('bank_uuid') or body.get('bank_code') or '').strip().lower()
+        bank=next((b for b in banks if requested in [str(b.get('uuid','')).lower(),str(b.get('interInstitutionCode','')).lower(),str(b.get('sortCode','')).lower()]),None)
+        if not bank or not bank.get('uuid'):fail(422,'BANK_NOT_SUPPORTED','Select a bank returned by Paga.')
+        validation=client.validate_bank_account('SKVAL'+secrets.token_hex(10).upper(),100000,bank['uuid'],account_number)
+        if str(validation.get('responseCode'))!='0':fail(422,'BANK_ACCOUNT_NOT_VERIFIED',validation.get('message') or 'Paga could not verify this bank account.')
+        provider_name=str(validation.get('destinationAccountHolderNameAtBank') or '').strip()
+        if not provider_name:fail(502,'BANK_ACCOUNT_NAME_MISSING','Paga verified the account but did not return an account holder name.')
+        token=secrets.token_urlsafe(32)
+        encrypted=payout_cipher().encrypt(account_number.encode()).decode()
+        old=u.payout_account or {}
+        is_change=bool(old.get('verified') and old.get('account_number_enc'))
+        effective=now()+timedelta(hours=24) if is_change else now()
+        pending={
+            'bank_uuid':bank['uuid'],'bank_code':bank.get('interInstitutionCode') or bank.get('sortCode'),
+            'bank_name':bank.get('name'),'account_number_enc':encrypted,
+            'masked_account_number':'••••'+account_number[-4:],'account_name':provider_name,
+            'verified':True,'verified_at':iso(),'effective_at':iso(effective),
+            'mode':client.config.provider_mode,
+            'validation_fee_kobo':int((Decimal(str(validation.get('fee') or 0))+Decimal(str(validation.get('vat') or 0)))*100),
+            'account_version':uid(),
+            'destination_fingerprint':hmac.new(SECRET,b'PAYOUT:'+bank['uuid'].encode()+b':'+account_number.encode(),hashlib.sha256).hexdigest()
+        }
+        u.payout_account={**old,'pending_verification':pending,
+            'pending_confirmation_hash':hashlib.sha256(token.encode()).hexdigest(),
+            'pending_confirmation_expires_at':iso(now()+timedelta(minutes=15))}
+        audit(s,u,'PAYOUT_ACCOUNT_VERIFICATION_STARTED','USER',u.id,{'bank_uuid':bank['uuid'],'masked_account_number':pending['masked_account_number'],'destination_fingerprint':pending['destination_fingerprint']})
+        notify(s,u.id,'PAYOUT_ACCOUNT_CONFIRMATION_REQUIRED',u.id,{'bank_name':bank.get('name'),'masked_account_number':pending['masked_account_number']})
+        s.commit()
+        return {'confirmation_required':True,'confirmation_token':token,
+            'account_name':provider_name,'bank_name':bank.get('name'),
+            'masked_account_number':pending['masked_account_number'],
+            'effective_at':pending['effective_at'],'cooldown_hours':24 if is_change else 0}
+    except PagaError as exc:fail(502,'PAGA_ACCOUNT_VALIDATION_FAILED',str(exc))
+
+@app.post('/api/v1/me/payout-account/confirm')
+def confirm_payout_account(body:dict,s:Session=Depends(db),u:User=Depends(current_user)):
+    account=dict(u.payout_account or {})
+    pending=account.get('pending_verification') or {}
+    token=str(body.get('confirmation_token') or '')
+    expected=account.get('pending_confirmation_hash')
+    if not pending or not expected or not hmac.compare_digest(hashlib.sha256(token.encode()).hexdigest(),expected):
+        fail(409,'PAYOUT_ACCOUNT_CONFIRMATION_INVALID','The bank-account confirmation request is invalid or has expired.')
+    try:
+        expiry=datetime.fromisoformat(account['pending_confirmation_expires_at'].replace('Z','+00:00'))
+        if expiry<now():fail(410,'PAYOUT_ACCOUNT_CONFIRMATION_EXPIRED','The bank-account confirmation has expired. Verify the account again.')
+    except (KeyError,ValueError,AttributeError):fail(410,'PAYOUT_ACCOUNT_CONFIRMATION_EXPIRED','The bank-account confirmation has expired. Verify the account again.')
+    if body.get('confirm_account_ownership') is not True:
+        fail(422,'BENEFICIARY_OWNERSHIP_CONFIRMATION_REQUIRED','Confirm that you own or are authorised to receive funds into this bank account.')
+    confirmed=' '.join(str(body.get('confirmed_account_name') or '').upper().split())
+    provider_name=' '.join(str(pending.get('account_name') or '').upper().split())
+    if not confirmed or not hmac.compare_digest(confirmed,provider_name):
+        fail(422,'BANK_ACCOUNT_NAME_MISMATCH','The confirmed account name must exactly match the name returned by Paga.')
+    active={k:v for k,v in account.items() if k not in ['pending_verification','pending_confirmation_hash','pending_confirmation_expires_at','change_pending','reverification_required','pending_bank_name','pending_masked_account_number','pending_account_name','pending_effective_at']}
+    was_verified=bool(active.get('verified') and active.get('account_number_enc'))
+    active.update(pending)
+    active['change_pending']=bool(was_verified and datetime.fromisoformat(pending['effective_at'].replace('Z','+00:00'))>now())
+    u.payout_account=active
+    audit(s,u,'PAYOUT_ACCOUNT_VERIFIED','USER',u.id,{'bank_uuid':active['bank_uuid'],'masked_account_number':active['masked_account_number'],'destination_fingerprint':active['destination_fingerprint'],'cooldown_hours':24 if was_verified else 0})
+    notify(s,u.id,'PAYOUT_ACCOUNT_CHANGED','USER',{'bank_name':active.get('bank_name'),'masked_account_number':active.get('masked_account_number'),'effective_at':active.get('effective_at'),'change_pending':active['change_pending']})
+    s.commit()
+    return {'payout_account':public_payout_account(active),'status':'VERIFIED','change_pending':active['change_pending']}
 
 @app.post('/api/v1/transactions',status_code=201)
 def create_tx(body:dict,s:Session=Depends(db),u:User=Depends(current_user)):
@@ -1081,8 +1168,10 @@ def confirm_acceptance(did:str,body:dict,request:Request,s:Session=Depends(db),u
             lot['item_status']='ACCEPTED_CONFIRMED'; amount=lot.get('allocation_kobo',lot['quantity']*next(i['unit_price_kobo'] for i in d['items'] if i['id']==lot['item_id'])); payout_amount+=amount; lots.append(lot)
     prior_payout=sum(x.amount_kobo for x in s.scalars(select(Instruction).where(Instruction.transaction_id==tx.id,Instruction.instruction_type=='PAYOUT')).all() if instruction_amount_for_cap(x))
     if payout_amount<=0 or prior_payout+payout_amount>int(d.get('goods_total_kobo') or d.get('total_payable_kobo') or 0):fail(422,'PAYOUT_EXCEEDS_AGREED_ENTITLEMENT','Supplier payout cannot exceed the agreed transaction amount.')
-    threshold=d.get('config_snapshot',{}).get('high_value_threshold_kobo',50000000); status='PENDING_APPROVAL' if payout_amount>=threshold else 'QUEUED'
-    ins=Instruction(id=uid(),transaction_id=tx.id,instruction_type='PAYOUT',amount_kobo=payout_amount,status=status,origin_id=did,deciding_moderator_id=u.id,idempotency_key='decision:'+did); s.add(ins)
+    destination=verified_destination_snapshot(s.get(User,tx.supplier_id))
+    threshold=d.get('config_snapshot',{}).get('high_value_threshold_kobo',50000000)
+    status='PENDING_APPROVAL' if payout_amount>=threshold or (os.getenv('PAYMENT_PROVIDER','simulated').lower()=='paga' and not destination) else 'QUEUED'
+    ins=Instruction(id=uid(),transaction_id=tx.id,instruction_type='PAYOUT',amount_kobo=payout_amount,status=status,origin_id=did,deciding_moderator_id=u.id,idempotency_key='decision:'+did,destination_snapshot=destination); s.add(ins)
     if status=='QUEUED':post_journal(s,tx.id,'RELEASE_AUTHORIZED',ins.id,[('HELD_FUNDS','DEBIT',payout_amount),('SUPPLIER_PAYABLE','CREDIT',payout_amount)])
     if lots:
         for lot in lots:lot['money_status']='RELEASE_PENDING'
@@ -1171,7 +1260,8 @@ def return_confirm(rid:str,body:dict,s:Session=Depends(db),u:User=Depends(curren
     status='PENDING_APPROVAL'  # Return refunds always require moderator approval after supplier receipt.
     prior_refunds=sum(x.amount_kobo for x in s.scalars(select(Instruction).where(Instruction.transaction_id==tx.id,Instruction.instruction_type=='REFUND')).all() if instruction_classification(x)=='DISPUTE_RETURN' and instruction_amount_for_cap(x))
     if total<=0 or prior_refunds+total>int(d.get('goods_total_kobo') or d.get('total_payable_kobo') or 0):fail(422,'REFUND_EXCEEDS_ELIGIBLE_AMOUNT','Return refund cannot exceed the agreed eligible amount.')
-    ins=Instruction(id=uid(),transaction_id=tx.id,instruction_type='REFUND',refund_classification='DISPUTE_RETURN',amount_kobo=total,status=status,origin_id=rid,deciding_moderator_id=None,idempotency_key='return:'+rid);s.add(ins)
+    destination=verified_destination_snapshot(s.get(User,tx.buyer_id))
+    ins=Instruction(id=uid(),transaction_id=tx.id,instruction_type='REFUND',refund_classification='DISPUTE_RETURN',amount_kobo=total,status=status,origin_id=rid,deciding_moderator_id=None,idempotency_key='return:'+rid,destination_snapshot=destination);s.add(ins)
     save_tx(s,tx,d);reconcile_transaction_completion(s,tx,d);audit(s,u,'RETURN_RECEIPT_CONFIRMED','RETURN',rid,{'refund_id':ins.id,'amount_kobo':total});notify(s,tx.buyer_id,'REFUND_INSTRUCTION_CREATED',tx.id,{'instruction_id':ins.id,'status':ins.status});s.commit();return {'status':ret['status'],'refund':{'id':ins.id,'status':status,'amount_kobo':total}}
 @app.post('/api/v1/returns/{rid}/contest')
 def return_contest(rid:str,body:dict,s:Session=Depends(db),u:User=Depends(current_user)):
@@ -1347,15 +1437,17 @@ def dispute_decision(did:str,body:dict,request:Request,s:Session=Depends(db),u:U
     if payout_total:
         prior_payout=sum(x.amount_kobo for x in s.scalars(select(Instruction).where(Instruction.transaction_id==tx.id,Instruction.instruction_type=='PAYOUT')).all() if instruction_amount_for_cap(x))
         if prior_payout+payout_total>int(d.get('goods_total_kobo') or d.get('total_payable_kobo') or 0):fail(422,'PAYOUT_EXCEEDS_AGREED_ENTITLEMENT','Supplier payout cannot exceed the agreed transaction amount.')
-        status='PENDING_APPROVAL' if payout_total>=threshold else 'QUEUED';requires_second|=status=='PENDING_APPROVAL'
-        ins=Instruction(id=uid(),transaction_id=tx.id,instruction_type='PAYOUT',amount_kobo=payout_total,status=status,origin_id=did,deciding_moderator_id=u.id,idempotency_key='dispute:'+did+':PAYOUT');s.add(ins)
+        destination=verified_destination_snapshot(s.get(User,tx.supplier_id))
+        status='PENDING_APPROVAL' if payout_total>=threshold or (os.getenv('PAYMENT_PROVIDER','simulated').lower()=='paga' and not destination) else 'QUEUED';requires_second|=status=='PENDING_APPROVAL'
+        ins=Instruction(id=uid(),transaction_id=tx.id,instruction_type='PAYOUT',amount_kobo=payout_total,status=status,origin_id=did,deciding_moderator_id=u.id,idempotency_key='dispute:'+did+':PAYOUT',destination_snapshot=destination);s.add(ins)
         if status=='QUEUED':post_journal(s,tx.id,'RELEASE_AUTHORIZED',ins.id,[('HELD_FUNDS','DEBIT',payout_total),('SUPPLIER_PAYABLE','CREDIT',payout_total)])
         instructions.append({'type':'PAYOUT','id':ins.id,'status':status,'amount_kobo':payout_total,'origin_type':'DISPUTE_DECISION'})
     if refund_total:
         prior_dispute_refund=sum(x.amount_kobo for x in s.scalars(select(Instruction).where(Instruction.transaction_id==tx.id,Instruction.instruction_type=='REFUND')).all() if instruction_classification(x)=='DISPUTE_RETURN' and instruction_amount_for_cap(x))
         if prior_dispute_refund+refund_total>int(d.get('goods_total_kobo') or d.get('total_payable_kobo') or 0):fail(422,'REFUND_EXCEEDS_ELIGIBLE_AMOUNT','Dispute refund cannot exceed the agreed eligible amount.')
-        status='PENDING_APPROVAL' if refund_total>=threshold else 'QUEUED';requires_second|=status=='PENDING_APPROVAL'
-        ins=Instruction(id=uid(),transaction_id=tx.id,instruction_type='REFUND',refund_classification='DISPUTE_RETURN',amount_kobo=refund_total,status=status,origin_id=did,deciding_moderator_id=u.id,idempotency_key='dispute:'+did+':REFUND');s.add(ins)
+        destination=verified_destination_snapshot(s.get(User,tx.buyer_id))
+        status='PENDING_APPROVAL' if refund_total>=threshold or (os.getenv('PAYMENT_PROVIDER','simulated').lower()=='paga' and not destination) else 'QUEUED';requires_second|=status=='PENDING_APPROVAL'
+        ins=Instruction(id=uid(),transaction_id=tx.id,instruction_type='REFUND',refund_classification='DISPUTE_RETURN',amount_kobo=refund_total,status=status,origin_id=did,deciding_moderator_id=u.id,idempotency_key='dispute:'+did+':REFUND',destination_snapshot=destination);s.add(ins)
         if status=='QUEUED':post_journal(s,tx.id,'REFUND_AUTHORIZED',ins.id,[('HELD_FUNDS','DEBIT',refund_total),('BUYER_REFUNDABLE','CREDIT',refund_total)])
         instructions.append({'type':'REFUND','id':ins.id,'status':status,'amount_kobo':refund_total,'origin_type':'DISPUTE_DECISION'})
     disp.status='AWAITING_SECOND_APPROVAL' if requires_second else 'DECIDED'
@@ -1371,6 +1463,12 @@ def approve_instruction(iid:str,s:Session=Depends(db),u:User=Depends(current_use
     if ins.status!='PENDING_APPROVAL':fail(409,'INSTRUCTION_NOT_PENDING_APPROVAL','Instruction is not awaiting approval.')
     if ins.deciding_moderator_id==u.id:fail(403,'SELF_APPROVAL_NOT_ALLOWED','A different senior moderator must approve.')
     tx=s.get(Aggregate,ins.transaction_id);ensure_no_unresolved_financial_exception(s,tx,exclude_id=ins.id)
+    if os.getenv('PAYMENT_PROVIDER','simulated').lower()=='paga' and not ins.destination_snapshot:
+        recipient_id=tx.supplier_id if ins.instruction_type=='PAYOUT' else tx.buyer_id
+        recipient=s.get(User,recipient_id) if recipient_id else None
+        snapshot=verified_destination_snapshot(recipient) if recipient else None
+        if not snapshot:fail(409,'VERIFIED_BENEFICIARY_REQUIRED','The payout/refund recipient must complete Paga bank verification, account-name confirmation and any security cooldown before financial approval.')
+        ins.destination_snapshot=snapshot
     ins.status='QUEUED'
     if instruction_classification(ins)!='EXCESS_PAYMENT':
         post_journal(s,ins.transaction_id,'RELEASE_AUTHORIZED' if ins.instruction_type=='PAYOUT' else 'REFUND_AUTHORIZED',ins.id,[('HELD_FUNDS','DEBIT',ins.amount_kobo),('SUPPLIER_PAYABLE' if ins.instruction_type=='PAYOUT' else 'BUYER_REFUNDABLE','CREDIT',ins.amount_kobo)])
@@ -1609,10 +1707,17 @@ def resolve_exception(iid:str,body:dict,s:Session=Depends(db),u:User=Depends(cur
         ins.resolved=True
         threshold=int(d.get('config_snapshot',{}).get('high_value_threshold_kobo',50000000))
         retry_status='PENDING_APPROVAL' if ins.amount_kobo>=threshold else 'QUEUED'
+        retry_destination=ins.destination_snapshot
+        if os.getenv('PAYMENT_PROVIDER','simulated').lower()=='paga' and not retry_destination:
+            recipient_id=tx.supplier_id if ins.instruction_type=='PAYOUT' else tx.buyer_id
+            recipient=s.get(User,recipient_id) if recipient_id else None
+            retry_destination=verified_destination_snapshot(recipient) if recipient else None
+            if not retry_destination:fail(409,'VERIFIED_BENEFICIARY_REQUIRED','A verified recipient bank account with an elapsed security cooldown is required before retrying this transfer.')
         retry=Instruction(id=uid(),transaction_id=ins.transaction_id,instruction_type=ins.instruction_type,
             refund_classification=ins.refund_classification,retry_of_id=ins.id,amount_kobo=ins.amount_kobo,
             status=retry_status,origin_id=ins.origin_id,deciding_moderator_id=ins.deciding_moderator_id,
-            idempotency_key='retry:'+ins.id,provider_response={'retry_of_id':ins.id,'previous_provider_stage':ins.provider_stage})
+            idempotency_key='retry:'+ins.id,provider_response={'retry_of_id':ins.id,'previous_provider_stage':ins.provider_stage},
+            destination_snapshot=retry_destination)
         s.add(retry);s.flush()
         if retry_status=='QUEUED':
             post_journal(s,tx.id,'RELEASE_AUTHORIZED' if retry.instruction_type=='PAYOUT' else 'REFUND_AUTHORIZED',retry.id,
@@ -1921,10 +2026,8 @@ def run_paga_financial(s:Session):
         active=s.scalar(select(Instruction).where(Instruction.transaction_id==ins.transaction_id,Instruction.id!=ins.id,Instruction.status.in_(['SUBMITTED','UNKNOWN'])).limit(1))
         if active:pending+=1;continue
         account=s.scalar(select(PagaSubsidiaryAccount).where(PagaSubsidiaryAccount.transaction_id==tx.id))
-        target_id=tx.supplier_id if ins.instruction_type=='PAYOUT' else tx.buyer_id
-        target=s.get(User,target_id) if target_id else None
-        payout=target.payout_account if target else None
-        if not account or not account.account_reference or not payout or not payout.get('verified') or not payout.get('account_number_enc'):
+        payout=ins.destination_snapshot or {}
+        if not account or not account.account_reference or not payout or not payout.get('bank_uuid') or not payout.get('account_number_enc'):
             pending+=1;continue
         try:account_number=decrypt_payout_account(payout)
         except ValueError as exc:
@@ -1938,11 +2041,20 @@ def run_paga_financial(s:Session):
                     if str(before.get('statusCode'))!='0':raise PagaUnknownOutcome('Could not establish the pre-charge subsidiary balance.')
                     before_kobo=int((Decimal(str(before.get('balance','0')))*100).quantize(Decimal('1')))
                     if before_kobo<ins.amount_kobo:raise PagaError('Transaction subsidiary account has insufficient available balance for this instruction.')
-                    ins.provider_response={'balance_before_kobo':before_kobo};ins.provider_reference=charge_ref;ins.provider_stage='CHARGE_SUBMITTING';s.commit()
+                    ins.provider_response={'balance_before_kobo':before_kobo}
                 except PagaUnknownOutcome as exc:
                     freeze_instruction_unknown(s,ins,tx,d,str(exc));ins.provider_reference=charge_ref;ins.provider_stage='CHARGE_UNKNOWN';processed.append({'id':ins.id,'status':'UNKNOWN'});s.commit();continue
                 except PagaError as exc:
                     ins.status='FAILED';ins.provider_stage='CHARGE_FAILED';ins.provider_response={'error':str(exc)};audit(s,None,'PAGA_CHARGE_FAILED','INSTRUCTION',ins.id,{'reason':str(exc)});processed.append({'id':ins.id,'status':'FAILED'});s.commit();continue
+            # Compare-and-set claim prevents two workers from executing the same
+            # charge concurrently. The provider reference remains stable across recovery.
+            prior_stage=ins.provider_stage
+            claim_query=update(Instruction).where(Instruction.id==ins.id,Instruction.status=='QUEUED')
+            claim_query=claim_query.where(Instruction.provider_stage.is_(None) if prior_stage in [None,''] else Instruction.provider_stage==prior_stage)
+            claim=s.execute(claim_query.values(status='UNKNOWN',provider_stage='CHARGE_SUBMITTING',provider_reference=charge_ref,provider_response=ins.provider_response or {}))
+            if claim.rowcount!=1:
+                s.rollback();continue
+            ins.status='UNKNOWN';ins.provider_stage='CHARGE_SUBMITTING';ins.provider_reference=charge_ref;s.commit()
             try:
                 charged=client.charge_subsidiary_account(account.account_reference,charge_ref,ins.amount_kobo,f'SupplyKey {ins.instruction_type.lower()} {ins.id[:8]}')
                 before=int((ins.provider_response or {}).get('balance_before_kobo',0))
@@ -1950,7 +2062,7 @@ def run_paga_financial(s:Session):
                 except (InvalidOperation,TypeError,ValueError):new_balance=-1
                 if str(charged.get('statusCode'))!='0' or before-new_balance!=ins.amount_kobo:
                     ins.status='UNKNOWN';ins.provider_stage='CHARGE_UNKNOWN';ins.provider_reference=charge_ref;ins.provider_response={**(ins.provider_response or {}),'charge':charged,'charge_error':'Paga charge response did not prove the exact authorised debit.'};freeze_instruction_unknown(s,ins,tx,d,'Paga charge amount or balance delta did not match the instruction.');s.commit();processed.append({'id':ins.id,'status':'UNKNOWN'});continue
-                ins.provider_stage='SUBSIDIARY_CHARGED';ins.provider_reference=transfer_ref;ins.provider_response={**(ins.provider_response or {}),'charge':charged}
+                ins.provider_stage='SUBSIDIARY_CHARGED';ins.provider_reference=transfer_ref;ins.provider_response={**(ins.provider_response or {}),'charge':charged};ins.status='QUEUED'
                 s.commit()
             except PagaUnknownOutcome as exc:
                 freeze_instruction_unknown(s,ins,tx,d,str(exc));ins.provider_reference=charge_ref;ins.provider_stage='CHARGE_UNKNOWN';processed.append({'id':ins.id,'status':'UNKNOWN'});s.commit();continue
@@ -1959,15 +2071,26 @@ def run_paga_financial(s:Session):
         if ins.provider_stage=='SUBSIDIARY_CHARGED':
             try:
                 validation=client.validate_bank_account('SKVAL'+ins.id.replace('-',''),ins.amount_kobo,payout['bank_uuid'],account_number)
-                if str(validation.get('responseCode'))!='0':
-                    ins.provider_response={**(ins.provider_response or {}),'destination_validation':validation}
-                    restore_paga_subsidiary_funds(s,client,ins,tx,d,account,f'Paga destination validation failed with responseCode {validation.get("responseCode")}.')
+                provider_holder=' '.join(str(validation.get('destinationAccountHolderNameAtBank') or '').upper().split())
+                bound_holder=' '.join(str(payout.get('account_name') or '').upper().split())
+                if str(validation.get('responseCode'))!='0' or not provider_holder or not hmac.compare_digest(provider_holder,bound_holder):
+                    ins.provider_response={**(ins.provider_response or {}),'destination_validation':{'responseCode':validation.get('responseCode'),'holder_match':bool(provider_holder and bound_holder and hmac.compare_digest(provider_holder,bound_holder))}}
+                    restore_paga_subsidiary_funds(s,client,ins,tx,d,account,'Paga destination validation failed or the verified account name no longer matches the confirmed beneficiary.')
                     audit(s,None,'PAGA_DESTINATION_VALIDATION_FAILED','INSTRUCTION',ins.id,{'response_code':validation.get('responseCode')});processed.append({'id':ins.id,'status':ins.status});s.commit();continue
                 fee_kobo=int(((Decimal(str(validation.get('fee') or 0))+Decimal(str(validation.get('vat') or 0)))*100).quantize(Decimal('1')))
                 balance=client.get_business_balance('SKBAL'+ins.id.replace('-',''))
                 available_kobo=int((Decimal(str(balance.get('availableBalance','0')))*100).quantize(Decimal('1')))
                 if str(balance.get('responseCode'))!='0' or available_kobo < ins.amount_kobo+fee_kobo:
-                    ins.provider_response={**(ins.provider_response or {}),'available_balance_kobo':available_kobo,'required_balance_kobo':ins.amount_kobo+fee_kobo,'destination_validation':validation};pending+=1;s.commit();continue
+                    ins.provider_response={**(ins.provider_response or {}),'available_balance_kobo':available_kobo,'required_balance_kobo':ins.amount_kobo+fee_kobo,'destination_validation':{'responseCode':validation.get('responseCode'),'fee':validation.get('fee'),'vat':validation.get('vat'),'holder_match':True}};pending+=1;s.commit();continue
+                # Compare-and-set claim immediately before the money-moving request.
+                # Validation and balance enquiries are safe to repeat; depositToBank is not.
+                claim=s.execute(update(Instruction).where(
+                    Instruction.id==ins.id,Instruction.status=='QUEUED',
+                    Instruction.provider_stage=='SUBSIDIARY_CHARGED'
+                ).values(status='UNKNOWN',provider_stage='TRANSFER_SUBMITTING'))
+                if claim.rowcount!=1:
+                    s.rollback();continue
+                ins.status='UNKNOWN';ins.provider_stage='TRANSFER_SUBMITTING';s.commit()
                 result=client.deposit_to_bank(transfer_ref,ins.amount_kobo,payout['bank_uuid'],account_number,client.config.payout_callback_url,f'SupplyKey {ins.instruction_type.lower()} {ins.id[:8]}')
                 code=str(result.get('responseCode'))
                 ins.provider_response={**(ins.provider_response or {}),'transfer':result}

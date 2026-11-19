@@ -103,6 +103,7 @@ class Instruction(Base):
     provider_reference: Mapped[str|None]=mapped_column(String(50),nullable=True,index=True)
     provider_stage: Mapped[str|None]=mapped_column(String(32),nullable=True)
     provider_response: Mapped[dict|None]=mapped_column(JSON,nullable=True)
+    destination_snapshot: Mapped[dict|None]=mapped_column(JSON,nullable=True)
     resolved: Mapped[bool]=mapped_column(default=False)
     created_at: Mapped[datetime]=mapped_column(DateTime(timezone=True), default=now)
 class Dispute(Base):
@@ -151,11 +152,13 @@ def init_db():
                 'resolved':'BOOLEAN NOT NULL DEFAULT 0',
                 'refund_classification':'VARCHAR(32)',
                 'retry_of_id':'VARCHAR(36)',
+                'destination_snapshot':'JSON',
             }
             with engine.begin() as connection:
                 for name,definition in additions.items():
                     if name not in existing:
                         connection.exec_driver_sql(f'ALTER TABLE financial_instructions ADD COLUMN {name} {definition}')
+                connection.exec_driver_sql("UPDATE financial_instructions SET status='PENDING_APPROVAL' WHERE status='QUEUED' AND destination_snapshot IS NULL AND transaction_id IN (SELECT transaction_id FROM payments WHERE mode LIKE 'PAGA%')")
                 legacy=connection.exec_driver_sql("SELECT id, provider_response FROM financial_instructions WHERE instruction_type='REFUND' AND refund_classification IS NULL").fetchall()
                 for instruction_id, provider_response in legacy:
                     try:

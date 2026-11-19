@@ -324,19 +324,29 @@ def test_paga_bank_destination_is_validated_encrypted_and_masked(monkeypatch):
     monkeypatch.setattr(PagaClient,'validate_bank_account',lambda self,reference,amount_kobo,bank_uuid,account_number:{'responseCode':0,'destinationAccountHolderNameAtBank':'Test Destination User','fee':10,'vat':0.75})
     response=client.put('/api/v1/me/payout-account',headers=user,json={'bank_code':'999','account_number':'0123456789'})
     assert response.status_code==200,response.text
-    payout=response.json()['payout_account']
+    pending=response.json()
+    assert pending['confirmation_required'] is True
+    assert pending['account_name']=='Test Destination User'
+    assert pending['masked_account_number']=='••••6789'
+    assert 'account_number_enc' not in response.text
+    confirmed=client.post('/api/v1/me/payout-account/confirm',headers=user,json={
+        'confirmation_token':pending['confirmation_token'],
+        'confirmed_account_name':'Test Destination User','confirm_account_ownership':True
+    })
+    assert confirmed.status_code==200,confirmed.text
+    payout=confirmed.json()['payout_account']
     assert payout['verified'] is True
     assert payout['masked_account_number']=='••••6789'
     assert 'account_number_enc' not in payout
-
     me_response=client.get('/api/v1/me',headers=user)
     assert me_response.status_code==200
-    assert 'account_number_enc' not in me_response.json()['payout_account']
+    assert 'account_number_enc' not in me_response.text and '0123456789' not in me_response.text
     session=SessionLocal()
     try:
         stored=session.scalar(select(User).where(User.email=='bank-destination@testsupply.ng'))
         assert stored.payout_account['account_number_enc']
         assert decrypt_payout_account(stored.payout_account)=='0123456789'
+        assert stored.payout_account['destination_fingerprint']
     finally:session.close()
 
 
@@ -610,6 +620,12 @@ def test_paga_overpayment_secures_agreed_amount_and_queues_excess_for_moderator(
     approvals=client.get('/api/v1/mod/financial-approvals',headers=moderator).json()['data']
     refund=next(x for x in approvals if x.get('origin_type')=='PAGA_OVERPAYMENT' and x['transaction_id']==tid)
     assert refund['amount_kobo']==20000 and refund['status']=='PENDING_APPROVAL'
+    monkeypatch.setattr(PagaClient,'get_banks',lambda self:{'responseCode':0,'banks':[{'uuid':'BANK-UUID-1','name':'Test Bank','interInstitutionCode':'000999','sortCode':'999'}]})
+    monkeypatch.setattr(PagaClient,'validate_bank_account',lambda self,reference,amount_kobo,bank_uuid,account_number:{'responseCode':0,'destinationAccountHolderNameAtBank':'Overpay Buyer'})
+    verify=client.put('/api/v1/me/payout-account',headers=buyer,json={'bank_code':'999','account_number':'0123456789'})
+    assert verify.status_code==200,verify.text
+    confirmed=client.post('/api/v1/me/payout-account/confirm',headers=buyer,json={'confirmation_token':verify.json()['confirmation_token'],'confirmed_account_name':'Overpay Buyer','confirm_account_ownership':True})
+    assert confirmed.status_code==200,confirmed.text
     approved=client.post(f"/api/v1/mod/refunds/{refund['id']}/approve",headers=moderator,json={})
     assert approved.status_code==200,approved.text
     s=SessionLocal()
@@ -632,3 +648,89 @@ def test_buyer_receipt_action_permission_requires_dispatched_lots():
     assert 'confirm_received' in allowed_actions(tx,buyer)
     tx.data={'lots':[{'item_id':'item-1','quantity':0,'item_status':'DISPATCHED'}]}
     assert 'confirm_received' not in allowed_actions(tx,buyer)
+
+
+def test_paga_beneficiary_name_confirmation_and_change_cooldown(monkeypatch):
+    from app.providers.paga import PagaClient
+    from app.main import verified_destination_snapshot
+    from app.db import User
+    from sqlalchemy import select
+    monkeypatch.setenv('PAYMENT_PROVIDER','paga')
+    monkeypatch.setenv('PAGA_MODE','sandbox')
+    monkeypatch.setenv('PAGA_PUBLIC_KEY','sandbox-public')
+    monkeypatch.setenv('PAGA_SECRET_KEY','sandbox-secret')
+    monkeypatch.setenv('PAGA_HASH_KEY','sandbox-hash')
+    monkeypatch.setenv('PAGA_CALLBACK_URL','https://api.example.test/api/v1/webhooks/paga/subsidiary-account')
+    monkeypatch.setenv('PAYOUT_ENCRYPTION_KEY','test-payout-encryption-key-32-bytes-minimum')
+    user=register('Beneficiary Confirm User','beneficiary-confirm@testsupply.ng')
+    monkeypatch.setattr(PagaClient,'get_banks',lambda self:{'responseCode':0,'banks':[{'uuid':'BANK-UUID-1','name':'Test Bank','interInstitutionCode':'000999','sortCode':'999'}]})
+    monkeypatch.setattr(PagaClient,'validate_bank_account',lambda self,reference,amount_kobo,bank_uuid,account_number:{'responseCode':0,'destinationAccountHolderNameAtBank':'Correct Holder'})
+    first=client.put('/api/v1/me/payout-account',headers=user,json={'bank_uuid':'BANK-UUID-1','account_number':'0123456789'})
+    assert first.status_code==200
+    assert client.post('/api/v1/me/payout-account/confirm',headers=user,json={'confirmation_token':first.json()['confirmation_token'],'confirmed_account_name':'Correct Holder'}).status_code==422
+    assert client.post('/api/v1/me/payout-account/confirm',headers=user,json={'confirmation_token':first.json()['confirmation_token'],'confirmed_account_name':'Wrong Holder','confirm_account_ownership':True}).status_code==422
+    accepted=client.post('/api/v1/me/payout-account/confirm',headers=user,json={'confirmation_token':first.json()['confirmation_token'],'confirmed_account_name':'Correct Holder','confirm_account_ownership':True})
+    assert accepted.status_code==200,accepted.text
+    assert accepted.json()['payout_account']['verified'] is True
+    second=client.put('/api/v1/me/payout-account',headers=user,json={'bank_uuid':'BANK-UUID-1','account_number':'9876543210'})
+    assert second.status_code==200,second.text
+    assert second.json()['cooldown_hours']==24
+    changed=client.post('/api/v1/me/payout-account/confirm',headers=user,json={'confirmation_token':second.json()['confirmation_token'],'confirmed_account_name':'Correct Holder','confirm_account_ownership':True})
+    assert changed.status_code==200,changed.text
+    assert changed.json()['change_pending'] is True
+    session=SessionLocal()
+    try:
+        stored=session.scalar(select(User).where(User.email=='beneficiary-confirm@testsupply.ng'))
+        assert stored.payout_account['change_pending'] is True
+        assert verified_destination_snapshot(stored) is None
+    finally:
+        session.close()
+
+
+def test_paga_beneficiary_endpoint_rejects_unsupported_bank_and_non_nuban(monkeypatch):
+    from app.providers.paga import PagaClient
+    monkeypatch.setenv('PAYMENT_PROVIDER','paga')
+    monkeypatch.setenv('PAGA_MODE','sandbox')
+    monkeypatch.setenv('PAGA_PUBLIC_KEY','sandbox-public')
+    monkeypatch.setenv('PAGA_SECRET_KEY','sandbox-secret')
+    monkeypatch.setenv('PAGA_HASH_KEY','sandbox-hash')
+    monkeypatch.setenv('PAGA_CALLBACK_URL','https://api.example.test/api/v1/webhooks/paga/subsidiary-account')
+    user=register('Unsupported Bank User','unsupported-bank@testsupply.ng')
+    monkeypatch.setattr(PagaClient,'get_banks',lambda self:{'responseCode':0,'banks':[{'uuid':'BANK-UUID-1','name':'Test Bank','interInstitutionCode':'000999'}]})
+    assert client.put('/api/v1/me/payout-account',headers=user,json={'bank_uuid':'NOT-A-PAGA-BANK','account_number':'0123456789'}).status_code==422
+    assert client.put('/api/v1/me/payout-account',headers=user,json={'bank_uuid':'BANK-UUID-1','account_number':'12345'}).status_code==400
+
+
+def test_payout_account_update_is_scoped_to_authenticated_user_and_audit_masks_number(monkeypatch):
+    from app.providers.paga import PagaClient
+    from app.db import User, Audit
+    from sqlalchemy import select
+    monkeypatch.setenv('PAYMENT_PROVIDER','paga')
+    monkeypatch.setenv('PAGA_MODE','sandbox')
+    monkeypatch.setenv('PAGA_PUBLIC_KEY','sandbox-public')
+    monkeypatch.setenv('PAGA_SECRET_KEY','sandbox-secret')
+    monkeypatch.setenv('PAGA_HASH_KEY','sandbox-hash')
+    monkeypatch.setenv('PAGA_CALLBACK_URL','https://api.example.test/api/v1/webhooks/paga/subsidiary-account')
+    monkeypatch.setenv('PAYOUT_ENCRYPTION_KEY','test-payout-encryption-key-32-bytes-minimum')
+    actor=register('Own Bank Actor','own-bank-actor@testsupply.ng')
+    other=register('Other Bank User','other-bank-user@testsupply.ng')
+    monkeypatch.setattr(PagaClient,'get_banks',lambda self:{'responseCode':0,'banks':[{'uuid':'BANK-UUID-1','name':'Test Bank','interInstitutionCode':'000999'}]})
+    monkeypatch.setattr(PagaClient,'validate_bank_account',lambda self,reference,amount_kobo,bank_uuid,account_number:{'responseCode':0,'destinationAccountHolderNameAtBank':'Authorised Holder'})
+    session=SessionLocal()
+    try:other_id=session.scalar(select(User).where(User.email=='other-bank-user@testsupply.ng')).id
+    finally:session.close()
+    pending=client.put('/api/v1/me/payout-account',headers=actor,json={'user_id':other_id,'bank_uuid':'BANK-UUID-1','account_number':'0123456789'})
+    assert pending.status_code==200,pending.text
+    confirmed=client.post('/api/v1/me/payout-account/confirm',headers=actor,json={'confirmation_token':pending.json()['confirmation_token'],'confirmed_account_name':'Authorised Holder','confirm_account_ownership':True})
+    assert confirmed.status_code==200,confirmed.text
+    session=SessionLocal()
+    try:
+        actor_row=session.scalar(select(User).where(User.email=='own-bank-actor@testsupply.ng'))
+        other_row=session.scalar(select(User).where(User.email=='other-bank-user@testsupply.ng'))
+        assert actor_row.payout_account.get('verified') is True
+        assert not other_row.payout_account
+        audit_rows=session.scalars(select(Audit).where(Audit.entity_id==actor_row.id,Audit.action.in_(['PAYOUT_ACCOUNT_VERIFICATION_STARTED','PAYOUT_ACCOUNT_VERIFIED']))).all()
+        assert audit_rows
+        assert all('0123456789' not in json.dumps(row.details) for row in audit_rows)
+    finally:
+        session.close()

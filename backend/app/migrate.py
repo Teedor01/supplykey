@@ -10,7 +10,7 @@ if __name__=='__main__':
         migration_dir=Path(__file__).resolve().parent.parent/'migrations'
         url=url.replace('postgresql+psycopg://','postgresql://',1)
         with psycopg.connect(url) as conn:
-            for name in ['001_initial.sql','002_settlement_classification.sql']:
+            for name in ['001_initial.sql','002_settlement_classification.sql','003_verified_beneficiary_binding.sql']:
                 conn.execute((migration_dir/name).read_text(),prepare=False)
                 print(f'PostgreSQL migration {name} applied/verified.')
     else:

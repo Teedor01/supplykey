@@ -33,8 +33,17 @@ def test_paga_payout_submission_and_signed_settlement_callback(monkeypatch):
         })
         payment=Payment(id=payment_id,transaction_id=txid,amount_kobo=100000,status='FUNDS_SECURED',provider_ref='SKPAYTEST',mode='PAGA_SANDBOX')
         account=PagaSubsidiaryAccount(id=str(uuid.uuid4()),transaction_id=txid,payment_id=payment_id,account_reference='SKTXPAGATEST123',account_number=account_number,provider_reference='SKPAYTEST',status='FUNDED')
-        instruction=Instruction(id=ins_id,transaction_id=txid,instruction_type='PAYOUT',amount_kobo=100000,status='QUEUED',origin_id=decision_id,deciding_moderator_id=None,idempotency_key='paga-test-instruction')
+        instruction=Instruction(id=ins_id,transaction_id=txid,instruction_type='PAYOUT',amount_kobo=100000,status='QUEUED',origin_id=decision_id,deciding_moderator_id=None,idempotency_key='paga-test-instruction',destination_snapshot={'bank_uuid':'BANK-UUID','account_number_enc':payout_cipher().encrypt(b'0123456789').decode(),'account_name':'Supplier Name','verified':True})
         session.add_all([supplier,buyer,tx,payment,account,instruction]);session.commit()
+    finally:
+        session.close()
+
+    # A later account change must not redirect an already-authorized instruction.
+    session=SessionLocal()
+    try:
+        stored=session.get(User,supplier_id)
+        stored.payout_account={**stored.payout_account,'bank_uuid':'CHANGED-BANK','account_number_enc':payout_cipher().encrypt(b'9999999999').decode(),'account_name':'Different Person'}
+        session.commit()
     finally:
         session.close()
 
@@ -42,6 +51,7 @@ def test_paga_payout_submission_and_signed_settlement_callback(monkeypatch):
     def fake_charge(self, account_reference, reference, amount_kobo, narration):
         calls.append(('charge',account_reference,reference,amount_kobo));return {'statusCode':'0','transactionId':'CHG-1','newBalance':'0.00'}
     def fake_validate(self, reference, amount_kobo, bank_uuid, account_number):
+        assert bank_uuid=='BANK-UUID' and account_number=='0123456789'
         return {'responseCode':0,'destinationAccountHolderNameAtBank':'Supplier Name','fee':10,'vat':0.75}
     def fake_business_balance(self, reference):
         return {'responseCode':0,'availableBalance':'5000.00'}
@@ -58,12 +68,19 @@ def test_paga_payout_submission_and_signed_settlement_callback(monkeypatch):
     session=SessionLocal()
     try:
         result=run_paga_financial(session)
-        assert result['processed'][0]['status']=='SUBMITTED'
+        assert next(x for x in result['processed'] if x['id']==ins_id)['status']=='SUBMITTED', (result, instruction.provider_response, instruction.provider_stage)
         instruction=session.get(Instruction,ins_id)
         assert instruction.status=='SUBMITTED'
         assert instruction.provider_stage=='TRANSFER_SUBMITTED'
-        assert [x[0] for x in calls]==['charge','deposit']
+        assert [x[0] for x in calls]==['charge','deposit'] and calls[1][3:5]==('BANK-UUID','0123456789')
         transfer_ref=instruction.provider_reference
+    finally:
+        session.close()
+    session=SessionLocal()
+    try:
+        repeated=run_paga_financial(session)
+        assert not any(x['id']==ins_id for x in repeated['processed'])
+        assert len([x for x in calls if x[0]=='deposit'])==1
     finally:
         session.close()
 
@@ -72,6 +89,8 @@ def test_paga_payout_submission_and_signed_settlement_callback(monkeypatch):
     raw=(f'{{"responseCode":0,"referenceNumber":"{transfer_ref}","transactionId":"{transaction_id}","transactionType":"USER_SEND_CASH_TO_BANK_ACCOUNT_SETTLED","transactionDate":"{date}","amount":"{amount}","currency":"NGN","sessionId":"{session_id}","reversalId":null}}').encode()
     callback=TestClient(app).post('/api/v1/webhooks/paga/bank-transfer',content=raw,headers={'Content-Type':'application/json','x-paga-hash':signature})
     assert callback.status_code==200,callback.text
+    duplicate=TestClient(app).post('/api/v1/webhooks/paga/bank-transfer',content=raw,headers={'Content-Type':'application/json','x-paga-hash':signature})
+    assert duplicate.status_code==200 and duplicate.json().get('duplicate') is True
 
     session=SessionLocal()
     try:
@@ -83,6 +102,9 @@ def test_paga_payout_submission_and_signed_settlement_callback(monkeypatch):
         assert len(entries)==2
         assert sum(x.amount_kobo for x in entries if x.direction=='DEBIT')==100000
         assert sum(x.amount_kobo for x in entries if x.direction=='CREDIT')==100000
+        repeated_events=process_paga_payout_events(session)
+        assert repeated_events['processed']==0
+        assert len(session.query(LedgerEntry).filter(LedgerEntry.transaction_id==txid).all())==2
     finally:
         session.close()
 
@@ -156,7 +178,7 @@ def test_paga_definitive_bank_transfer_failure_restores_funds_before_marking_fai
         })
         payment=Payment(id=payment_id,transaction_id=txid,amount_kobo=100000,status='FUNDS_SECURED',provider_ref='SKPAY-RESTORE',mode='PAGA_SANDBOX')
         account=PagaSubsidiaryAccount(id=str(uuid.uuid4()),transaction_id=txid,payment_id=payment_id,account_reference='SKTXRESTORETEST123',account_number=account_number,provider_reference='SKPAY-RESTORE',status='FUNDED')
-        instruction=Instruction(id=ins_id,transaction_id=txid,instruction_type='PAYOUT',amount_kobo=100000,status='QUEUED',origin_id=decision_id,idempotency_key='paga-restore-instruction')
+        instruction=Instruction(id=ins_id,transaction_id=txid,instruction_type='PAYOUT',amount_kobo=100000,status='QUEUED',origin_id=decision_id,idempotency_key='paga-restore-instruction',destination_snapshot={'bank_uuid':'BANK-UUID','account_number_enc':payout_cipher().encrypt(b'0123456789').decode(),'account_name':'Supplier Name','verified':True})
         session.add_all([supplier,buyer,tx,payment,account,instruction]);session.commit()
     finally:session.close()
 
@@ -222,4 +244,51 @@ def test_daily_paga_statement_reconciliation_resolves_settled_unknown_transfer(m
         instruction=session.get(Instruction,ins_id)
         assert instruction.status=='SUCCEEDED'
         assert instruction.provider_stage=='SETTLED'
+    finally:session.close()
+
+
+def test_paga_dispute_refund_uses_buyers_verified_destination_and_waits_for_provider_confirmation(monkeypatch):
+    monkeypatch.setenv('PAYMENT_PROVIDER','paga')
+    monkeypatch.setenv('PAGA_MODE','sandbox')
+    monkeypatch.setenv('PAGA_PUBLIC_KEY','sandbox-public')
+    monkeypatch.setenv('PAGA_SECRET_KEY','sandbox-secret')
+    monkeypatch.setenv('PAGA_HASH_KEY','sandbox-hash')
+    monkeypatch.setenv('PAGA_CALLBACK_URL','https://api.example.test/api/v1/webhooks/paga/subsidiary-account')
+    monkeypatch.setenv('PAGA_PAYOUT_CALLBACK_URL','https://api.example.test/api/v1/webhooks/paga/bank-transfer')
+    monkeypatch.setenv('PAYOUT_ENCRYPTION_KEY','test-payout-encryption-key-32-bytes-minimum')
+    supplier_id=str(uuid.uuid4());buyer_id=str(uuid.uuid4());txid=str(uuid.uuid4());payment_id=str(uuid.uuid4());ins_id=str(uuid.uuid4());lot_id=str(uuid.uuid4());decision_id=str(uuid.uuid4())
+    session=SessionLocal()
+    try:
+        supplier=User(id=supplier_id,email=f'{supplier_id}@test.ng',phone=None,password_hash='x',display_name='Supplier',role='USER',verified=True,profile={},payout_account={})
+        buyer=User(id=buyer_id,email=f'{buyer_id}@test.ng',phone=None,password_hash='x',display_name='Buyer',role='USER',verified=True,profile={},payout_account={})
+        tx=Aggregate(id=txid,reference='SK-PAGA-REFUND-TEST',supplier_id=supplier_id,buyer_id=buyer_id,status='SETTLEMENT_PENDING',version=1,data={
+            'items':[{'id':'item-1','quantity':1,'unit_price_kobo':100000,'line_total_kobo':100000}],
+            'lots':[{'id':lot_id,'item_id':'item-1','quantity':1,'item_status':'RETURN_RECEIPT_CONFIRMED','money_status':'REFUND_PENDING','allocation_kobo':100000,'is_frozen':False}],
+            'returns':[{'id':'return-1','status':'RECEIPT_CONFIRMED'}]
+        })
+        payment=Payment(id=payment_id,transaction_id=txid,amount_kobo=100000,status='FUNDS_SECURED',provider_ref='SKPAY-REFUND',mode='PAGA_SANDBOX')
+        account=PagaSubsidiaryAccount(id=str(uuid.uuid4()),transaction_id=txid,payment_id=payment_id,account_reference='SKTXPAGAREFUND123',account_number='0123456789',provider_reference='SKPAY-REFUND',status='FUNDED')
+        destination={'bank_uuid':'BUYER-BANK-UUID','account_number_enc':payout_cipher().encrypt(b'9876543210').decode(),'account_name':'Buyer Refund Name','masked_account_number':'••••3210','account_version':'version-1','destination_fingerprint':'fingerprint-1'}
+        instruction=Instruction(id=ins_id,transaction_id=txid,instruction_type='REFUND',refund_classification='DISPUTE_RETURN',amount_kobo=100000,status='QUEUED',origin_id='return-1',deciding_moderator_id='moderator-1',idempotency_key='paga-refund-test',destination_snapshot=destination)
+        session.add_all([supplier,buyer,tx,payment,account,instruction]);session.commit()
+    finally:session.close()
+    calls=[]
+    monkeypatch.setattr(PagaClient,'get_subsidiary_balance',lambda self,account_reference,reference:{'statusCode':'0','balance':'1000.00'})
+    monkeypatch.setattr(PagaClient,'charge_subsidiary_account',lambda self,account_reference,reference,amount_kobo,narration:{'statusCode':'0','transactionId':'CHG-REFUND','newBalance':'0.00'})
+    def validate(self,reference,amount_kobo,bank_uuid,account_number):
+        assert bank_uuid=='BUYER-BANK-UUID' and account_number=='9876543210'
+        return {'responseCode':0,'destinationAccountHolderNameAtBank':'Buyer Refund Name','fee':10,'vat':0.75}
+    monkeypatch.setattr(PagaClient,'validate_bank_account',validate)
+    monkeypatch.setattr(PagaClient,'get_business_balance',lambda self,reference:{'responseCode':0,'availableBalance':'5000.00'})
+    def deposit(self,reference,amount_kobo,bank_uuid,account_number,callback_url,remarks):
+        calls.append((amount_kobo,bank_uuid,account_number,remarks))
+        return {'responseCode':0,'transactionId':'RP-REFUND-1'}
+    monkeypatch.setattr(PagaClient,'deposit_to_bank',deposit)
+    session=SessionLocal()
+    try:
+        result=run_paga_financial(session)
+        assert next(x for x in result['processed'] if x['id']==ins_id)['status']=='SUBMITTED'
+        saved=session.get(Instruction,ins_id)
+        assert saved.status=='SUBMITTED' and saved.provider_stage=='TRANSFER_SUBMITTED'
+        assert calls==[(100000,'BUYER-BANK-UUID','9876543210',f'SupplyKey refund {ins_id[:8]}')]
     finally:session.close()

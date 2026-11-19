@@ -146,7 +146,8 @@ def _settlement_fixture(excess=200_000, payout_status='SUCCEEDED', refund_status
         save_tx(s, tx, d)
         payout = Instruction(id=str(uuid.uuid4()), transaction_id=tx.id, instruction_type='PAYOUT',
             amount_kobo=1_000_000, status=payout_status, origin_id=str(uuid.uuid4()),
-            deciding_moderator_id=None, idempotency_key='test-payout:'+tx.id)
+            deciding_moderator_id=None, idempotency_key='test-payout:'+tx.id,
+            destination_snapshot={'bank_uuid':'TEST-BANK','account_number_enc':'encrypted-test-account','account_name':'Test Beneficiary'})
         s.add(payout)
         if excess:
             refund = Instruction(id=str(uuid.uuid4()), transaction_id=tx.id, instruction_type='REFUND',
@@ -429,7 +430,7 @@ def test_late_callback_conflict_status_query_resolves_failure_without_second_fun
         old.status='UNKNOWN';old.resolved=False;old.provider_stage='CONFLICTING_LATE_SUCCESS';old.provider_reference=transfer_ref
         retry = Instruction(id=retry_id, transaction_id=ctx['txid'], instruction_type='PAYOUT', amount_kobo=1_000_000,
             status='CANCELLED', resolved=True, provider_stage='CANCELLED_AFTER_LATE_CALLBACK_CONFLICT',
-            origin_id=old.origin_id, retry_of_id=old.id, idempotency_key='late-query-retry:'+ctx['txid'])
+            origin_id=old.origin_id, retry_of_id=old.id, idempotency_key='late-query-retry:'+ctx['txid'], destination_snapshot=old.destination_snapshot)
         s.add(retry);s.commit()
     finally:
         s.close()
@@ -455,3 +456,23 @@ def test_late_callback_conflict_status_query_resolves_failure_without_second_fun
         json={'action':'RETRY','reason':'The late event was reconciled as failed; safely retry the restored amount.'})
     assert retry_again.status_code == 200
     assert retry_again.json()['instruction']['retry_of_id'] == retry_id
+
+
+def test_legacy_queued_paga_instruction_without_destination_snapshot_returns_to_senior_review():
+    from app.db import init_db
+    ctx, payment = _funded_context()
+    s=SessionLocal()
+    try:
+        pay=s.get(Payment,payment['payment_id']);pay.mode='PAGA_SANDBOX'
+        legacy=Instruction(id=str(uuid.uuid4()),transaction_id=ctx['txid'],instruction_type='PAYOUT',
+            amount_kobo=100000,status='QUEUED',origin_id=str(uuid.uuid4()),
+            idempotency_key='legacy-unbound-paga:'+ctx['txid'])
+        s.add(legacy);s.commit();legacy_id=legacy.id
+    finally:s.close()
+    init_db()
+    s=SessionLocal()
+    try:
+        legacy=s.get(Instruction,legacy_id)
+        assert legacy.status=='PENDING_APPROVAL'
+        assert legacy.destination_snapshot is None
+    finally:s.close()

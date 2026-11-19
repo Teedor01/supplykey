@@ -255,3 +255,13 @@ def test_live_mode_is_blocked_without_written_custody_and_legal_approvals(monkey
     monkeypatch.delenv('PAGA_LEGAL_APPROVAL_REFERENCE',raising=False)
     with pytest.raises(PagaError,match='live mode is blocked'):
         PagaConfig.from_env()
+
+
+def test_provider_http_error_body_cannot_leak_bank_account_number_into_exception():
+    paga=client()
+    body=json.dumps({'responseCode':116,'message':'Invalid destination 0123456789','destinationBankAccountNumber':'0123456789'}).encode()
+    error=urllib.error.HTTPError('https://beta.mypaga.com/test',400,'Bad Request',{},__import__('io').BytesIO(body))
+    with patch('urllib.request.urlopen',side_effect=error):
+        with pytest.raises(PagaError) as caught:
+            paga.validate_bank_account('VAL-REDACTED',100000,'BANK-UUID','0123456789')
+    assert '0123456789' not in str(caught.value)

@@ -124,7 +124,10 @@ class PagaClient:
             # A 5xx may occur after Paga processed the operation.
             if exc.code >= 500:
                 raise PagaUnknownOutcome(f"Paga returned HTTP {exc.code}; query the original reference.") from exc
-            raise PagaError(f"Paga rejected the request (HTTP {exc.code}): {detail}") from exc
+            provider_code=(detail.get('responseCode') or detail.get('statusCode') or detail.get('errorCode')) if isinstance(detail,dict) else None
+            # Do not propagate provider response bodies: they may echo beneficiary
+            # account numbers or other financial identifiers into API/audit logs.
+            raise PagaError(f"Paga rejected the request (HTTP {exc.code}, provider code {provider_code or 'unspecified'}).") from exc
         except (TimeoutError, urllib.error.URLError, OSError) as exc:
             raise PagaUnknownOutcome("Paga request outcome is unknown; query the original reference before retrying.") from exc
         if not isinstance(result, dict):
