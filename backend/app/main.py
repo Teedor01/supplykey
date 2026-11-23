@@ -25,6 +25,7 @@ from .db import (
     SessionLocal,
     init_db,
     User,
+    EmailVerification,
     SessionToken,
     Aggregate,
     Payment,
@@ -43,6 +44,7 @@ from .db import (
     now,
 )
 from .providers.paga import PagaClient, PagaConfig, PagaError, PagaUnknownOutcome
+from .email_service import send_verification_email
 from .providers import simulated as sim
 from . import payment_state as ps
 from sqlalchemy.exc import IntegrityError
@@ -983,23 +985,31 @@ def register(body: dict, s: Session = Depends(db)):
         not body.get("accepted_terms")
         or len(str(body.get("password", ""))) < 10
         or not body.get("display_name")
-        or not (body.get("email") or body.get("phone"))
+        or not body.get("email")
     ):
         fail(
             400,
             "VALIDATION_FAILED",
-            "Name, email or phone, password of at least 10 characters and accepted_terms are required.",
+            "Name, email, password of at least 10 characters and accepted_terms are required.",
         )
+
     email = normalize_email(body.get("email"))
     phone = normalize_phone(body.get("phone"))
-    if body.get("email") and (not email or "@" not in email):
+
+    if not email or "@" not in email:
         fail(400, "INVALID_EMAIL", "Enter a valid email address.")
+
     if body.get("phone") and not phone:
         fail(400, "INVALID_PHONE", "Enter a valid phone number.")
-    if email and s.scalar(select(User).where(User.email == email)):
+
+    if s.scalar(select(User).where(User.email == email)):
         fail(409, "EMAIL_TAKEN", "Email is already registered.")
+
     if phone and s.scalar(select(User).where(User.phone == phone)):
         fail(409, "PHONE_TAKEN", "Phone is already registered.")
+
+    otp = f"{secrets.randbelow(1_000_000):06d}"
+
     u = User(
         id=uid(),
         email=email,
@@ -1008,31 +1018,112 @@ def register(body: dict, s: Session = Depends(db)):
         display_name=body["display_name"],
         profile={"display_name": body["display_name"]},
     )
+
+    verification = EmailVerification(
+        id=uid(),
+        user_id=u.id,
+        otp_hash=hmac.new(
+            SECRET,
+            otp.encode(),
+            hashlib.sha256,
+        ).hexdigest(),
+        expires_at=now() + timedelta(minutes=10),
+        attempts=0,
+        resend_count=0,
+        last_sent_at=now(),
+    )
+
     s.add(u)
+    s.add(verification)
     s.commit()
-    result = {"user_id": u.id, "verification_required": True}
+
+    try:
+        send_verification_email(email, otp)
+    except Exception:
+        fail(
+            503,
+            "EMAIL_SEND_FAILED",
+            "Your account was created, but the verification email could not be sent. Please try resending the code.",
+        )
+
+    result = {
+        "user_id": u.id,
+        "verification_required": True,
+    }
+
     if APP_ENV != "production":
-        result["development_otp"] = "000000"
+        result["development_otp"] = otp
+
     return result
 
 
 @app.post("/api/v1/auth/verify-otp")
 def verify_otp(body: dict, response: Response, s: Session = Depends(db)):
-    if APP_ENV == "production" or body.get("otp") != "000000":
-        fail(422, "OTP_INVALID", "The verification code is invalid or expired.")
     contact = body.get("contact")
     email = normalize_email(contact)
-    phone = normalize_phone(contact)
-    u = s.scalar(
-        select(User).where(
-            (User.email == email) if email and "@" in email else (User.phone == phone)
-        )
-    )
+    otp = str(body.get("otp", "")).strip()
+
+    if not email or "@" not in email:
+        fail(400, "INVALID_EMAIL", "Enter a valid email address.")
+
+    if len(otp) != 6 or not otp.isdigit():
+        fail(422, "OTP_INVALID", "The verification code is invalid or expired.")
+
+    u = s.scalar(select(User).where(User.email == email))
+
     if not u:
         fail(404, "NOT_FOUND", "Registration not found.")
+
+    if u.verified:
+        fail(409, "ALREADY_VERIFIED", "This email has already been verified.")
+
+    verification = s.scalar(
+        select(EmailVerification).where(EmailVerification.user_id == u.id)
+    )
+
+    if not verification:
+        fail(422, "OTP_INVALID", "The verification code is invalid or expired.")
+
+    if verification.attempts >= 5:
+        fail(
+            429,
+            "OTP_ATTEMPTS_EXCEEDED",
+            "Too many incorrect attempts. Request a new code.",
+        )
+
+    expires_at = verification.expires_at
+
+    if expires_at.tzinfo is None:
+        expires_at = expires_at.replace(tzinfo=timezone.utc)
+
+    if now() > expires_at:
+        fail(
+            422,
+            "OTP_EXPIRED",
+            "Your verification code has expired. Request a new code.",
+        )
+
+    submitted_hash = hmac.new(
+        SECRET,
+        otp.encode(),
+        hashlib.sha256,
+    ).hexdigest()
+
+    if not hmac.compare_digest(
+        submitted_hash,
+        verification.otp_hash,
+    ):
+        verification.attempts += 1
+        s.commit()
+        fail(422, "OTP_INVALID", "The verification code is invalid or expired.")
+
     u.verified = True
+    s.delete(verification)
+    s.commit()
+
     token = issue_token(s, u)
     set_refresh_cookie(response, issue_refresh(s, u))
+
     return {
         "access_token": token,
         "expires_in": ACCESS_MINUTES * 60,
@@ -1041,7 +1132,63 @@ def verify_otp(body: dict, response: Response, s: Session = Depends(db)):
 
 
 @app.post("/api/v1/auth/resend-otp")
-def resend_otp(body: dict):
+def resend_otp(body: dict, s: Session = Depends(db)):
+    email = normalize_email(body.get("contact"))
+
+    if not email or "@" not in email:
+        fail(400, "INVALID_EMAIL", "Enter a valid email address.")
+
+    u = s.scalar(select(User).where(User.email == email))
+
+    if not u:
+        fail(404, "NOT_FOUND", "Registration not found.")
+
+    if u.verified:
+        fail(409, "ALREADY_VERIFIED", "This email has already been verified.")
+
+    verification = s.scalar(
+        select(EmailVerification).where(EmailVerification.user_id == u.id)
+    )
+
+    if not verification:
+        fail(404, "VERIFICATION_NOT_FOUND", "Verification record not found.")
+
+    current_time = now()
+    last_sent = verification.last_sent_at
+
+    if last_sent.tzinfo is None:
+        last_sent = last_sent.replace(tzinfo=timezone.utc)
+
+    if (current_time - last_sent).total_seconds() < 60:
+        fail(429, "RESEND_TOO_SOON", "Please wait before requesting another code.")
+
+    if verification.resend_count >= 5:
+        fail(429, "RESEND_LIMIT_REACHED", "You have reached the resend limit.")
+
+    otp = f"{secrets.randbelow(1_000_000):06d}"
+
+    verification.otp_hash = hmac.new(
+        SECRET,
+        otp.encode(),
+        hashlib.sha256,
+    ).hexdigest()
+
+    verification.expires_at = current_time + timedelta(minutes=10)
+    verification.attempts = 0
+    verification.resend_count += 1
+    verification.last_sent_at = current_time
+
+    try:
+        send_verification_email(email, otp)
+        s.commit()
+    except Exception:
+        s.rollback()
+        fail(
+            503,
+            "EMAIL_SEND_FAILED",
+            "The verification email could not be sent. Please try again later.",
+        )
+
     return {"status": "SENT"}
 
 
@@ -1058,7 +1205,7 @@ def login(body: dict, response: Response, s: Session = Depends(db)):
     if not u or not check_password(body.get("password", ""), u.password_hash):
         fail(401, "INVALID_CREDENTIALS", "Invalid email/phone or password.")
     if not u.verified:
-        fail(403, "VERIFICATION_REQUIRED", "Verify your contact before signing in.")
+        fail(403, "VERIFICATION_REQUIRED", "Verify your email before signing in.")
     if u.role in ["MODERATOR", "SENIOR_MODERATOR", "ADMIN"]:
         if not u.mfa_secret:
             fail(

@@ -1,199 +1,5691 @@
-import React,{useEffect,useMemo,useState}from'react';
-import{Activity,AlertCircle,ArrowDownLeft,ArrowLeft,ArrowRight,ArrowUpRight, Bell,Box,BriefcaseBusiness,Check,CheckCircle2,ChevronDown,ChevronRight,Clock,FileCheck,FileText,Filter,HelpCircle,Home,Inbox,LogOut,Menu,MessageSquare,Package,Plus,RefreshCw,Search,Shield,ShieldCheck,ShoppingBag,Truck,Upload,Wallet,X,AlertTriangle,Users,ClipboardList,Settings,MoreHorizontal}from'lucide-react';
-import{api}from'./lib/api';import{settlementRows}from'./lib/settlement';import{buildModeratorActionRequest}from'./lib/moderation';import{money,titleCase,NG_STATES,REASONS,TX_STATES,dateTime,dateOnly}from'./lib/constants';
-const statusTone=s=>['FUNDED','COMPLETED','FUNDS_SECURED','ACCEPTED_CONFIRMED','SETTLED_RELEASED','SETTLED_REFUNDED','RETURN_RECEIPT_CONFIRMED','SUCCEEDED','SUBMITTED'].includes(s)?'green':['IN_DISPUTE','DISPUTED','FAILED','CANCELLED','OVERDUE','UNKNOWN'].includes(s)?'red':['AWAITING_PAYMENT','PENDING','SUBMITTED_FOR_REVIEW','DISPATCHED','RECEIPT_CONFIRMED','PENDING_APPROVAL','SETTLEMENT_PENDING','REFUND_PENDING','RELEASE_PENDING','PAYMENT_RECEIVED','REJECTED_AWAITING_RETURN'].includes(s)?'amber':'blue';
-function Badge({children}){return <span className={`badge ${statusTone(children)}`}><i/>{titleCase(children)}</span>}
-function Button({children,variant='primary',icon:Icon,disabled,onClick,type='button'}){return <button type={type} disabled={disabled} onClick={onClick} className={`btn ${variant}`}>{Icon&&<Icon size={16}/>} {children}</button>}
-function Field({label,children,hint}){return <label className="field"><span>{label}</span>{children}{hint&&<small>{hint}</small>}</label>}
-function App(){
- const inviteToken=new URLSearchParams(window.location.search).get('invite');const[inviteData,setInviteData]=useState(null),[profileData,setProfileData]=useState(null),[payoutData,setPayoutData]=useState(null);const[inviteError,setInviteError]=useState(''),[bankDirectory,setBankDirectory]=useState([]),[payoutConfirmation,setPayoutConfirmation]=useState(null),[confirmedAccountName,setConfirmedAccountName]=useState(''),[ownershipConfirmed,setOwnershipConfirmed]=useState(false);const[role,setRole]=useState(api.getDemoState().user?.role||'BUYER'),[user,setUser]=useState(api.getDemoState().user),[page,setPage]=useState(inviteToken?(sessionStorage.getItem('sk_access')?'invitation':'login'):(sessionStorage.getItem('sk_access')?'overview':'login')),[selected,setSelected]=useState(null),[txs,setTxs]=useState([]),[queue,setQueue]=useState([]),[exceptions,setExceptions]=useState([]),[approvals,setApprovals]=useState([]),[notifications,setNotifications]=useState([]),[busy,setBusy]=useState(false),[loading,setLoading]=useState(true),[toast,setToast]=useState(''),[shareUrl,setShareUrl]=useState(''),[search,setSearch]=useState(''),[statusFilter,setStatusFilter]=useState('ALL'),[mobile,setMobile]=useState(false),[modal,setModal]=useState(''),[form,setForm]=useState({}),[files,setFiles]=useState([]),[error,setError]=useState(''),[authMode,setAuthMode]=useState('login'),[sessionReady,setSessionReady]=useState(false),[adminAudit,setAdminAudit]=useState([]),[nextCursor,setNextCursor]=useState(null),[loadingMore,setLoadingMore]=useState(false),[queueCursors,setQueueCursors]=useState({acceptance:null,disputes:null}),[exceptionCursor,setExceptionCursor]=useState(null),[adminAuditCursor,setAdminAuditCursor]=useState(null);
- const isModerator=['MODERATOR','SENIOR_MODERATOR'].includes(role);
- const applyAuthenticatedUser=u=>{if(!u)throw new Error('The authenticated profile was not returned by the API.');setUser(u);const next=['MODERATOR','SENIOR_MODERATOR','ADMIN'].includes(u.role)?u.role:['BUYER','SUPPLIER'].includes(u.role)?u.role:(sessionStorage.getItem('sk_workspace')||'BUYER');setRole(next);if(['BUYER','SUPPLIER'].includes(next))sessionStorage.setItem('sk_workspace',next);return next;};
- const refresh=async()=>{setLoading(true);try{if(role==='ADMIN'){setTxs([]);setQueue([]);setExceptions([]);}else if(['MODERATOR','SENIOR_MODERATOR'].includes(role)){setTxs([]);const queuePage=await api.moderatorQueue();setQueue(queuePage.items);setQueueCursors(queuePage.cursors);if(role==='SENIOR_MODERATOR'){const exceptionPage=await api.financialExceptions();setExceptions(exceptionPage.items);setExceptionCursor(exceptionPage.nextCursor);setApprovals(await api.financialApprovals());}else{setExceptions([]);setExceptionCursor(null);setApprovals([]);}}else{const pageResult=await api.listTransactions(role);setTxs(pageResult.items);setNextCursor(pageResult.nextCursor);setQueue([]);setExceptions([]);}}catch(e){setError(e.data?.error?.message||e.message)}finally{setLoading(false)}};
- useEffect(()=>{let active=true;if(!sessionStorage.getItem('sk_access')){setSessionReady(true);return()=>{active=false};}api.me().then(r=>{if(!active)return;const restoredRole=applyAuthenticatedUser(r.user);if(!inviteToken)setPage(restoredRole==='ADMIN'?'audit':'overview');}).catch(()=>{if(!active)return;sessionStorage.removeItem('sk_access');setPage('login');setError('Your session could not be restored. Please sign in again.');}).finally(()=>{if(active)setSessionReady(true)});return()=>{active=false};},[]);useEffect(()=>{if(sessionReady&&sessionStorage.getItem('sk_access'))refresh()},[role,page,sessionReady]);useEffect(()=>{if(page!=='detail'||!selected?.id)return;let active=true,inFlight=false;const sync=async()=>{if(inFlight)return;inFlight=true;try{const latest=await api.transaction(selected.id);if(active)setSelected(latest);}catch(e){if(active)setError(e.data?.error?.message||e.message||'Could not refresh this transaction.');}finally{inFlight=false;}};const timer=setInterval(sync,8000);return()=>{active=false;clearInterval(timer)}},[page,selected?.id]);useEffect(()=>{if(page==='audit'&&role==='ADMIN'){api.adminAudit().then(r=>{setAdminAudit(r.items);setAdminAuditCursor(r.nextCursor)}).catch(e=>setError(e.data?.error?.message||e.message));}},[page,role]);useEffect(()=>{if(page==='invitation'&&inviteToken){api.invitation(inviteToken).then(setInviteData).catch(e=>setInviteError(e.data?.error?.message||e.message))}if(page==='profile'){api.me().then(r=>{setProfileData(r.profile);setPayoutData(r.payout_account||null)}).catch(e=>setError(e.message));if(api.mode==='live')api.pagaBanks().then(r=>setBankDirectory(Array.isArray(r)?r:(r.data||r.banks||[]))).catch(e=>setError(e.data?.error?.message||e.message))}},[page,inviteToken]);useEffect(()=>{if(toast){const t=setTimeout(()=>setToast(''),3500);return()=>clearTimeout(t)}},[toast]);
- const nav=role==='ADMIN'?[['audit','Audit trail',ClipboardList]]:role==='BUYER'?[['overview','Overview',Home],['transactions','My purchases',ShoppingBag],['profile','Profile',Users],['activity','Activity',Activity]]:role==='SUPPLIER'?[['overview','Overview',Home],['transactions','Sales & orders',Package],['create','New transaction',Plus],['profile','Profile',Users],['activity','Activity',Activity]]:[['overview','Overview',Home],['cases','Case queue',Inbox],...(role==='SENIOR_MODERATOR'?[['exceptions','Financial exceptions',AlertTriangle]]:[]),['audit','Audit trail',ClipboardList]];
- const chooseWorkspace=r=>{if(api.mode==='mock')setUser(api.switchRole(r));sessionStorage.setItem('sk_workspace',r);setRole(r);setPage('overview');setSelected(null);};
- const chooseRole=r=>{const u=api.switchRole(r);sessionStorage.setItem('sk_workspace',r);setRole(r);setUser(u);setPage(r==='BUYER'&&inviteToken?'invitation':'overview');setSelected(null);setMobile(false);};
- const act=async(path,body={},headers={})=>{setBusy(true);setError('');try{const res=await api.action(path,body,headers);await refresh();if(res?.invitation_url)setShareUrl(window.location.origin+res.invitation_url);else setShareUrl('');setToast(res?.invitation_url?'Agreement shared. Send the invitation link to the buyer.':res?.payout?.status==='PENDING_APPROVAL'?'Decision recorded. The payout instruction awaits a different senior moderator; no payout has been submitted.':res?.instructions?.some(i=>i.status==='PENDING_APPROVAL')?'Decision recorded. A financial instruction awaits a different senior moderator; no funds have moved.':res?.data?.dispute?'Goods rejection submitted. The supplier has been notified and payout is blocked while the dispute is unresolved.':'Action submitted successfully.');if(selected){try{setSelected(await api.transaction(selected.id));}catch(e){setError('The action succeeded, but the transaction detail could not be refreshed: '+(e.data?.error?.message||e.message));}}if(modal==='case'&&form.case?.id){try{const [latest,settlement]=await Promise.all([form.case.status==='SUBMITTED_FOR_REVIEW'?api.decisionDetail(form.case.id):api.caseDetail(form.case.id),api.moderatorSettlement(form.case.transaction_id)]);setForm(current=>({...current,detail:latest,settlement,detailError:'',submitError:''}));}catch(e){setForm(current=>({...current,detailError:'The action succeeded, but the case detail could not be refreshed: '+(e.data?.error?.message||e.message)}));}}return res;}catch(e){setError(e.data?.error?.message||e.message);throw e;}finally{setBusy(false)}};
- const loadMoreTransactions=async()=>{if(!nextCursor||loadingMore)return;setLoadingMore(true);try{const pageResult=await api.listTransactions(role,nextCursor);setTxs(current=>[...current,...pageResult.items]);setNextCursor(pageResult.nextCursor);}catch(e){setError(e.data?.error?.message||e.message)}finally{setLoadingMore(false)}};
- const loadMoreQueue=async()=>{if((!queueCursors.acceptance&&!queueCursors.disputes)||loadingMore)return;setLoadingMore(true);try{const pageResult=await api.moderatorQueue(queueCursors);setQueue(current=>[...current,...pageResult.items]);setQueueCursors(pageResult.cursors);}catch(e){setError(e.data?.error?.message||e.message)}finally{setLoadingMore(false)}};
- const loadMoreExceptions=async()=>{if(!exceptionCursor||loadingMore)return;setLoadingMore(true);try{const pageResult=await api.financialExceptions(exceptionCursor);setExceptions(current=>[...current,...pageResult.items]);setExceptionCursor(pageResult.nextCursor);}catch(e){setError(e.data?.error?.message||e.message)}finally{setLoadingMore(false)}};
- const loadMoreAdminAudit=async()=>{if(!adminAuditCursor||loadingMore)return;setLoadingMore(true);try{const pageResult=await api.adminAudit(adminAuditCursor);setAdminAudit(current=>[...current,...pageResult.items]);setAdminAuditCursor(pageResult.nextCursor);}catch(e){setError(e.data?.error?.message||e.message)}finally{setLoadingMore(false)}};
- const openTx=async t=>{setSelected(await api.transaction(t.id));setPage('detail');};const openCase=async q=>{setForm({case:q,detailLoading:true,caseAction:q.status==='SUBMITTED_FOR_REVIEW'?'confirm':'decision',evidenceIdsConsidered:[]});setModal('case');try{const [detail,settlement]=await Promise.all([q.status==='SUBMITTED_FOR_REVIEW'?api.decisionDetail(q.id):api.caseDetail(q.id),api.moderatorSettlement(q.transaction_id)]);const evidence=await Promise.all((detail.evidence||[]).map(ev=>api.evidence(ev.id)));setForm({case:q,detail:{...detail,evidence},settlement,caseAction:q.status==='SUBMITTED_FOR_REVIEW'?'confirm':'decision',evidenceIdsConsidered:[]});}catch(e){setForm({case:q,detailError:e.data?.error?.message||e.message||'Could not load the complete moderator case file.',caseAction:q.status==='SUBMITTED_FOR_REVIEW'?'confirm':'decision'});}};
- const filtered=txs.filter(t=>`${t.reference} ${t.buyer} ${t.supplier} ${t.status}`.toLowerCase().includes(search.toLowerCase())&&(statusFilter==='ALL'||t.status===statusFilter));
- const counts={all:txs.length,active:txs.filter(t=>!['COMPLETED','CANCELLED','EXPIRED'].includes(t.status)).length,disputes:txs.filter(t=>t.has_open_dispute||t.dispute).length};
- const handleLogin=async e=>{e.preventDefault();setBusy(true);setError('');try{const r=await api.login(form.identifier,form.password);if(r.mfa_required){sessionStorage.removeItem('sk_access');setForm(current=>({...current,mfaCode:''}));setAuthMode('mfa');setModal('');return;}if(r.access_token)sessionStorage.setItem('sk_access',r.access_token);const me=await api.me();const nextRole=applyAuthenticatedUser(me.user);setPage(nextRole==='ADMIN'?'audit':inviteToken?'invitation':'overview');setSessionReady(true);setToast('Signed in.');}catch(e){setError(e.data?.error?.message||e.message)}finally{setBusy(false)}};
- const handleRegister=async e=>{e.preventDefault();if(!form.email&&!form.phone){setError('Enter an email address or phone number.');return;}setBusy(true);setError('');try{const r=await api.register({...(form.email?{email:form.email}:{}),...(form.phone?{phone:form.phone}:{}),display_name:form.displayName,password:form.password,accepted_terms:!!form.acceptedTerms});setForm({...form,verificationContact:form.email||form.phone});setToast(r.verification_required?'Account created. Verify your contact to continue.':'Registration submitted.');setAuthMode('verify')}catch(e){setError(e.data?.error?.message||e.message)}finally{setBusy(false)}};const handleVerify=async e=>{e.preventDefault();setBusy(true);setError('');try{const r=await api.verifyOtp(form.verificationContact,form.otp);if(r.access_token)sessionStorage.setItem('sk_access',r.access_token);const me=await api.me();applyAuthenticatedUser(me.user);setSessionReady(true);setPage('overview');setToast('Contact verified.')}catch(e){setError(e.data?.error?.message||e.message)}finally{setBusy(false)}};
- const saveProfile=async e=>{e.preventDefault();setBusy(true);try{const r=await api.updateProfile(profileData);setProfileData(r.profile);setToast('Profile updated.')}catch(e){setError(e.data?.error?.message||e.message)}finally{setBusy(false)}};const savePayout=async e=>{e.preventDefault();setBusy(true);setError('');try{const r=await api.setPayoutAccount({bank_uuid:profileData.bank_uuid,account_number:profileData.account_number});setPayoutConfirmation({token:r.confirmation_token,accountName:r.account_name,bankName:r.bank_name,masked:r.masked_account_number,effectiveAt:r.effective_at,cooldownHours:r.cooldown_hours});setConfirmedAccountName('');setOwnershipConfirmed(false);setToast('Paga verified the bank account. Confirm the returned account-holder name to activate it.')}catch(e){setError(e.data?.error?.message||e.message)}finally{setBusy(false)}};const confirmPayout=async e=>{e.preventDefault();setBusy(true);setError('');try{const r=await api.confirmPayoutAccount({confirmation_token:payoutConfirmation.token,confirmed_account_name:confirmedAccountName,confirm_account_ownership:ownershipConfirmed});setPayoutData(r.payout_account||null);setPayoutConfirmation(null);setOwnershipConfirmed(false);setProfileData({...profileData,account_number:''});setToast(r.change_pending?'Bank account confirmed. The 24-hour security cooldown applies before new payouts.':'Bank account confirmed and activated.')}catch(e){setError(e.data?.error?.message||e.message)}finally{setBusy(false)}};
- const raiseDispute=async data=>{setBusy(true);setError('');try{await api.action(`/transactions/${data.txId}/disputes`,{reason_code:data.reasonCode,lines:[{item_id:data.itemId,quantity:Number(data.quantity||1)}],statement:data.reason});if(selected)setSelected(await api.transaction(selected.id));await refresh();setToast('Dispute opened. Funds remain under backend-controlled review.');setModal('');}catch(e){setError(e.data?.error?.message||e.message)}finally{setBusy(false)}};
- const handleMfa=async e=>{e.preventDefault();const code=String(form.mfaCode||'').trim();if(!/^\d{6}$/.test(code)){setError('Enter the six-digit code from your authenticator app.');return;}setBusy(true);setError('');try{const r=await api.action('/auth/mfa/verify',{code});if(!r.access_token)throw new Error('MFA verification did not return an authenticated session.');sessionStorage.setItem('sk_access',r.access_token);const me=await api.me();const nextRole=applyAuthenticatedUser(me.user);setSessionReady(true);setPage(nextRole==='ADMIN'?'audit':'overview');setAuthMode('login');setForm({});setToast('Staff identity verified.');}catch(e){const code=e.data?.error?.code;setError(code==='MFA_CHALLENGE_EXPIRED'?'Your MFA challenge has expired. Sign in again to request a new code.':code==='MFA_INVALID'?'That authenticator code is invalid or expired. Check your authenticator app and try again.':e.data?.error?.message||e.message);}finally{setBusy(false)}};
- const uploadEvidence=async(purpose)=>{if(!files.length){setError('Choose at least one evidence file.');return []}setBusy(true);try{const done=[];for(const f of files){const r=await api.upload(f,purpose,selected?.id||form.txId||'');done.push(r.id)}setFiles([]);setToast(`${done.length} evidence file(s) verified by the ${api.mode==='mock'?'demo adapter':'server'}.`);return done}catch(e){setError(e.message);return []}finally{setBusy(false)}};
- const createTx=async e=>{e.preventDefault();if(!String(form.buyerEmail||'').trim()&&!String(form.buyerPhone||'').trim()){setError('Enter the buyer email address or phone number.');return;}if(Number(form.deliveryFee||0)!==0){setError('Delivery-fee payer and refund allocation are unresolved (OD-05). The MVP form keeps delivery fees at zero until the policy is approved.');return;}setBusy(true);try{const buildItem=i=>({description:i.description,specification:i.specification,condition:i.condition||'As described',quantity:Number(i.quantity),unit_price_kobo:Math.round(Number(i.price)*100),conditions:[{code:'SPEC_MATCH',kind:'REJECTION',text:i.conditionText||'Item must match the agreed specification'}]});const items=[buildItem(form),...(form.additionalItems||[]).map(buildItem)];const t=await api.createTransaction({buyer_contact:{email:form.buyerEmail||undefined,phone:form.buyerPhone||undefined},delivery:{destination_state:form.state,city:form.city,expected_within_days:Number(form.days||5),fee_payer:'BUYER',delivery_fee_kobo:0},items,general_terms:form.terms||''});setSelected(t);setPage('detail');setToast('Draft created. Review the agreement before sharing.');await refresh()}catch(e){setError(e.data?.error?.message||e.message)}finally{setBusy(false)}};
- const sidebar=<><div className="brand"><div className="brand-mark"><ShieldCheck size={21}/></div><div><b>supplykey</b><small>TRADE WITH CONFIDENCE</small></div></div><div className="workspace-label">WORKSPACE</div><nav>{nav.map(([id,label,Icon])=><button key={id} className={page===id||page==='detail'&&id==='transactions'?'nav-item active':'nav-item'} onClick={()=>{setPage(id);setSelected(null);setMobile(false)}}><Icon size={18}/><span>{label}</span>{id==='cases'&&queue.length>0&&<em>{queue.length}</em>}</button>)}</nav><div className="side-bottom"><div className="help-card"><div className="help-icon"><HelpCircle size={18}/></div><b>Need a hand?</b><p>Explore how protected transactions work.</p><button onClick={()=>setModal('help')}>Visit help centre <ArrowRight size={14}/></button></div><div className="profile"><div className="avatar">{(user?.display_name||'U').split(' ').map(x=>x[0]).join('').slice(0,2)}</div><div className="profile-meta"><b>{user?.display_name||'Guest'}</b><small>{titleCase(role)}</small></div><button className="icon-btn" onClick={()=>setModal('account')}><MoreHorizontal size={18}/></button></div></div></>;
- if(page==='login')return <div className="login-screen"><div className="login-art"><div className="brand light"><div className="brand-mark"><ShieldCheck size={21}/></div><div><b>supplykey</b><small>TRADE WITH CONFIDENCE</small></div></div><div className="login-message"><span className="eyebrow">A SAFER WAY TO TRADE</span><h1>Confidence in every<br/>transaction.</h1><p>Clear agreements. Verified funding status. Evidence at every step.</p><div className="login-points"><span><CheckCircle2/> Funds status you can trust</span><span><CheckCircle2/> A record of every agreement</span><span><CheckCircle2/> Fair, moderated dispute review</span></div></div><div className="login-foot">Built for buyers and suppliers across Nigeria.</div></div><div className="login-form-wrap"><div className="login-form"><span className="eyebrow">{authMode==='login'?'WELCOME BACK':authMode==='mfa'?'ADDITIONAL SECURITY CHECK':'GET STARTED'}</span><h2>{authMode==='login'?'Sign in to SupplyKey':authMode==='register'?'Create your account':authMode==='mfa'?'Verify your identity':'Verify your contact'}</h2><p>{authMode==='login'?'Enter your account details to continue.':authMode==='register'?'Set up your SupplyKey account.':authMode==='mfa'?'Enter the six-digit code from your authenticator app to finish signing in.':'Enter the one-time code sent to your contact.'}</p>{error&&<div className="alert error"><AlertTriangle size={16}/>{error}</div>}{authMode==='login'?<><form onSubmit={handleLogin}><Field label="Email or phone"><input required value={form.identifier||''} onChange={e=>setForm({...form,identifier:e.target.value})} placeholder="you@example.com"/></Field><Field label="Password"><input type="password" required value={form.password||''} onChange={e=>setForm({...form,password:e.target.value})} placeholder="Enter your password"/></Field><Button type="submit" disabled={busy}>Sign in <ArrowRight size={16}/></Button></form><button type="button" className="auth-switch" onClick={()=>{setAuthMode('register');setError('')}}>Create a SupplyKey account</button></>:authMode==='mfa'?<><form onSubmit={handleMfa}><Field label="6-digit authenticator code"><input autoComplete="one-time-code" inputMode="numeric" pattern="[0-9]{6}" maxLength={6} required value={form.mfaCode||''} onChange={e=>setForm({...form,mfaCode:e.target.value.replace(/\D/g,'').slice(0,6)})} placeholder="000000"/></Field><Button type="submit" disabled={busy||!/^\d{6}$/.test(form.mfaCode||'')}>Verify</Button></form><button type="button" className="auth-switch" disabled={busy} onClick={()=>{setAuthMode('login');setForm(current=>({...current,mfaCode:''}));setError('')}}>Back to sign in</button></>:authMode==='register'?<form onSubmit={handleRegister}><Field label="Full name"><input required value={form.displayName||''} onChange={e=>setForm({...form,displayName:e.target.value})}/></Field><Field label="Email"><input type="email" value={form.email||''} onChange={e=>setForm({...form,email:e.target.value})}/></Field><Field label="Phone"><input value={form.phone||''} onChange={e=>setForm({...form,phone:e.target.value})}/></Field><Field label="Password (minimum 10 characters)"><input type="password" minLength="10" required value={form.password||''} onChange={e=>setForm({...form,password:e.target.value})}/></Field><label className="terms-check"><input type="checkbox" required checked={!!form.acceptedTerms} onChange={e=>setForm({...form,acceptedTerms:e.target.checked})}/> I accept the terms of service.</label><Button type="submit" disabled={busy}>Create account <ArrowRight size={16}/></Button><button type="button" className="auth-switch" onClick={()=>setAuthMode('login')}>Back to sign in</button></form>:<form onSubmit={handleVerify}><Field label="Email or phone"><input required value={form.verificationContact||''} onChange={e=>setForm({...form,verificationContact:e.target.value})}/></Field><Field label="One-time code"><input required maxLength="6" value={form.otp||''} onChange={e=>setForm({...form,otp:e.target.value})}/></Field><Button type="submit" disabled={busy}>Verify account <ArrowRight size={16}/></Button><button type="button" className="auth-switch" onClick={async()=>{try{await api.resendOtp(form.verificationContact);setToast('A new verification code was requested.')}catch(e){setError(e.message)}}}>Resend code</button><button type="button" className="auth-switch" onClick={()=>setAuthMode('login')}>Back to sign in</button></form>}{api.mode==='mock'&&<><div className="demo-divider"><span>DEMO ACCESS</span></div><p className="demo-note">Choose a role to explore the application with sample records.</p><div className="role-pills">{['BUYER','SUPPLIER','MODERATOR','SENIOR_MODERATOR'].map(r=><button type="button" onClick={()=>chooseRole(r)}>{titleCase(r)}</button>)}</div><small className="muted">Authentication is simulated locally. Demo registration uses code 123456.</small></>}</div></div></div>;
- return <div className="app-shell"><aside className={`sidebar ${mobile?'show':''}`}>{sidebar}</aside>{mobile&&<div className="scrim" onClick={()=>setMobile(false)}/>}<main className="main"><header className="topbar"><button className="icon-btn mobile-menu" onClick={()=>setMobile(true)}><Menu/></button><div className="crumb">Workspace <ChevronRight size={14}/> <b>{page==='detail'?'Transaction details':nav.find(n=>n[0]===page)?.[1]||titleCase(page)}</b></div><div className="top-actions"><div className="env-pill"><span/> {api.mode==='mock'?'DEMO ENVIRONMENT':'CONNECTED API'}</div><button className="icon-btn" onClick={async()=>{try{setNotifications(await api.notifications())}catch(e){setError(e.message)}setModal('notifications')}}><Bell size={18}/><i className="notification-dot"/></button><button className="top-avatar" onClick={()=>setModal('account')}>{(user?.display_name||'U').split(' ').map(x=>x[0]).join('').slice(0,2)}</button></div></header>
- <div className="content">{api.mode==='mock'&&<div className="demo-banner"><Shield size={16}/><span><b>Demo mode</b> — sample data and local workflow actions. Payment attempts remain pending; no real funds are moved and no settlement is simulated.</span><button onClick={()=>{api.reset();api.switchRole(role);setSelected(null);refresh();setToast('Demo data reset.')}}>Reset demo data</button></div>}
- {error&&<div className="alert error global"><AlertTriangle size={17}/><span>{error}</span><button onClick={()=>setError('')}><X size={15}/></button></div>}
- {page==='invitation'&&<><div className="page-heading"><div><span className="eyebrow">SUPPLIER INVITATION</span><h1>Review transaction invitation</h1><p>Confirm the transaction details before agreeing to the current agreement version.</p></div></div>{inviteError?<div className="alert error">{inviteError}</div>:!inviteData?<section className="panel"><Empty title="Loading invitation" text="Retrieving the transaction invitation details."/></section>:<section className="panel invitation-card"><div className="invitation-top"><div className="stat-icon"><FileText/></div><div><b>{inviteData.reference}</b><small>Invitation from {inviteData.supplier}</small></div><Badge>{inviteData.status}</Badge></div><div className="summary-line"><span>Delivery destination</span><b>{inviteData.destination}</b></div><div className="summary-line"><span>Total payable</span><b>{money(inviteData.total_payable_kobo)}</b></div>{inviteData.items?.map(i=><div className="item-row"><div className="item-thumb"><Package/></div><div className="item-info"><b>{i.description}</b><p>{i.specification}</p><small>Quantity {i.quantity} · {money(i.unit_price_kobo)} each</small></div></div>)}<div className="notice"><ShieldCheck size={16}/> Accepting the invitation links your account as the buyer. It does not confirm agreement or initiate payment.</div><Button disabled={busy||role!=='BUYER'} onClick={async()=>{try{const t=await api.acceptInvitation(inviteToken);setSelected(t);setPage('detail');setToast('Invitation accepted. Review and confirm the agreement separately.');await refresh()}catch(e){setInviteError(e.data?.error?.message||e.message)}}}>Accept invitation <ArrowRight size={16}/></Button></section>}</>}{page==='overview'&&<><div className="page-heading"><div><span className="eyebrow">{isModerator?'OPERATIONS CENTRE':'YOUR WORKSPACE'}</span><h1>{role==='BUYER'?'Good to see you, Chinedu':role==='SUPPLIER'?'Welcome back, Ibrahim':'Moderation overview'}</h1><p>{isModerator?'Review cases, protect the process and keep decisions accountable.':'Here’s what’s happening with your protected transactions.'}</p></div>{role==='SUPPLIER'&&<Button icon={Plus} onClick={()=>setPage('create')}>Create transaction</Button>}</div>
- <div className="stats-grid">{(isModerator?[['Open cases',queue.length,Inbox,'Cases requiring attention'],['Acceptance reviews',queue.filter(q=>q.status==='SUBMITTED_FOR_REVIEW').length,FileCheck,'Awaiting moderator review'],['Disputes',queue.filter(q=>q.status!=='SUBMITTED_FOR_REVIEW').length,Shield,'Active case files']]:[['All transactions',counts.all,BriefcaseBusiness,'Across your workspace'],['In progress',counts.active,Clock,'Not yet settled'],['Disputes',counts.disputes,Shield,'Need attention']]).map(([label,val,Icon,sub])=><div className="stat-card"><div className="stat-top"><span>{label}</span><div className="stat-icon"><Icon size={18}/></div></div><strong>{val}</strong><small>{sub}</small></div>)}</div>
- <div className="section-grid"><section className="panel wide"><div className="panel-head"><div><h3>{isModerator?'Priority queue':'Recent transactions'}</h3><p>{isModerator?'Cases that need moderator attention':'Your latest activity across SupplyKey'}</p></div><button className="text-link" onClick={()=>setPage(isModerator?'cases':'transactions')}>View all <ArrowRight size={15}/></button></div>{isModerator?<QueueTable items={queue.slice(0,4)} onOpen={openCase} loading={loading}/>:<TransactionTable items={txs.slice(0,4)} onOpen={openTx} loading={loading}/>}</section><section className="panel activity-panel"><div className="panel-head"><div><h3>How SupplyKey protects you</h3><p>Every step has a clear record.</p></div></div><div className="protection-list"><div><div className="step-icon"><FileText/></div><div><b>Agree on the details</b><p>Both parties confirm the same item specifications and terms.</p></div></div><div><div className="step-icon"><Wallet/></div><div><b>Verify funding</b><p>Dispatch begins only after the backend confirms funds are secured.</p></div></div><div><div className="step-icon"><CameraIcon/></div><div><b>Keep evidence</b><p>Photographs support the record; they do not prove receipt by themselves.</p></div></div><div><div className="step-icon"><ShieldCheck/></div><div><b>Independent review</b><p>Acceptance and disputes follow a documented review process.</p></div></div></div></section></div>
- <section className="trust-strip"><div className="trust-symbol"><ShieldCheck/></div><div><b>Your transaction record stays organised.</b><p>Agreements, evidence, deadlines and decisions are tied to each transaction.</p></div><span>SUPPLYKEY PROTECTION</span></section>{role==='SENIOR_MODERATOR'&&<ApprovalPanel items={api.mode==='mock'?api.getDemoState().approvals:approvals} onAction={act}/> }</>}
- {page==='profile'&&<><div className="page-heading"><div><span className="eyebrow">ACCOUNT SETTINGS</span><h1>Your profile</h1><p>Keep your contact and business details current.</p></div></div><div className="profile-layout"><form className="panel form-panel" onSubmit={saveProfile}><h3>Profile information</h3><p className="muted">Your profile details are stored by the backend.</p><Field label="Display name"><input required value={profileData?.display_name||''} onChange={e=>setProfileData({...profileData,display_name:e.target.value})}/></Field><Field label="Business name (optional)"><input value={profileData?.business_name||''} onChange={e=>setProfileData({...profileData,business_name:e.target.value})}/></Field><Field label="State"><select value={profileData?.state||''} onChange={e=>setProfileData({...profileData,state:e.target.value})}><option value="">Select state</option>{NG_STATES.map(s=><option>{s}</option>)}</select></Field><Field label="Address"><textarea value={profileData?.address||''} onChange={e=>setProfileData({...profileData,address:e.target.value})}/></Field><Button type="submit" disabled={busy||!profileData}>Save profile</Button></form>{['SUPPLIER','BUYER'].includes(role)?<div className="panel form-panel"><h3>Bank account for payouts and refunds</h3><p className="muted">This verified bank destination is used for supplier payouts and buyer refunds. Account details are encrypted by the backend; only masked details are returned.</p><div className="payout-status"><span>Current verification</span><Badge>{payoutData?.change_pending?'CHANGE_PENDING':payoutData?.verified?'VERIFIED':'NOT_VERIFIED'}</Badge></div> {payoutData?.reverification_required&&<div className="notice"><Shield size={16}/> This saved account predates SupplyKey's beneficiary confirmation process. Verify it again and confirm the bank-returned account name before it can receive a new payout or refund.</div>}{payoutData?.masked_account_number&&<div className="summary-line"><span>Account</span><b>{payoutData.account_name} · {payoutData.masked_account_number}</b></div>}{payoutData?.effective_at&&<div className="summary-line"><span>Effective from</span><b>{dateTime(payoutData.effective_at)}</b></div>}<form onSubmit={savePayout}><Field label="Bank"><select required value={profileData?.bank_uuid||''} onChange={e=>setProfileData({...profileData,bank_uuid:e.target.value})}><option value="">Select a bank from Paga</option>{bankDirectory.map(b=><option key={b.uuid} value={b.uuid}>{b.name}</option>)}</select></Field><Field label="Account number"><input required inputMode="numeric" maxLength="10" value={profileData?.account_number||''} onChange={e=>setProfileData({...profileData,account_number:e.target.value.replace(/\D/g,'')})} placeholder="10-digit account number"/></Field><div className="notice"><Shield size={16}/> The backend validates the destination with Paga when Paga mode is enabled. Do not enter real bank details while using the local simulator.</div><Button type="submit" disabled={busy||api.mode==='mock'||!bankDirectory.length}>Verify bank account</Button>{api.mode==='mock'&&<small className="muted">Payout account submission is disabled in demo mode. Use a live backend and verified account flow.</small>}{api.mode==='live'&&!bankDirectory.length&&<small className="muted">Loading Paga's supported bank directory. Manual bank codes are not accepted.</small>}</form>{payoutConfirmation&&<form className="confirm-beneficiary" onSubmit={confirmPayout}><div className="notice"><Shield size={16}/> Paga returned <b>{payoutConfirmation.accountName}</b> for {payoutConfirmation.bankName} · {payoutConfirmation.masked}. Confirm the exact name to bind this beneficiary.{payoutConfirmation.cooldownHours?` A ${payoutConfirmation.cooldownHours}-hour security cooldown applies.`:''}</div><Field label="Confirm account holder name"><input required autoComplete="off" value={confirmedAccountName} onChange={e=>setConfirmedAccountName(e.target.value)} placeholder="Enter the name returned by Paga"/></Field><label className="checkbox-field"><input type="checkbox" checked={ownershipConfirmed} onChange={e=>setOwnershipConfirmed(e.target.checked)}/><span>I confirm that I own or am authorised to receive funds into this bank account.</span></label><Button type="submit" disabled={busy||!ownershipConfirmed}>Confirm bank account</Button></form>}</div>:<div className="panel form-panel"><h3>Bank account settings</h3><p className="muted">Bank destinations are available to buyers and suppliers.</p></div>}</div></>}{page==='transactions'&&<><div className="page-heading"><div><span className="eyebrow">TRANSACTION MANAGEMENT</span><h1>{role==='BUYER'?'My purchases':'Sales & orders'}</h1><p>Track agreements, funding, delivery and next steps in one place.</p></div>{role==='SUPPLIER'&&<Button icon={Plus} onClick={()=>setPage('create')}>New transaction</Button>}</div><div className="toolbar"><div className="search-box"><Search size={17}/><input placeholder="Search by reference, name or status" value={search} onChange={e=>setSearch(e.target.value)}/></div><label className="filter-btn"><Filter size={16}/><select value={statusFilter} onChange={e=>setStatusFilter(e.target.value)}><option value="ALL">All statuses</option>{TX_STATES.map(s=><option value={s}>{titleCase(s)}</option>)}</select><ChevronDown size={14}/></label></div><section className="panel table-panel"><TransactionTable items={filtered} onOpen={openTx} loading={loading}/>{nextCursor&&<div className="pagination-actions"><Button variant="secondary" disabled={loadingMore} onClick={loadMoreTransactions}>{loadingMore?'Loading…':'Load more transactions'}</Button></div>}</section></>}
- {page==='create'&&<><div className="page-heading"><div><button className="back-link" onClick={()=>setPage('transactions')}><ArrowLeft size={15}/> Back to transactions</button><span className="eyebrow">NEW SALE</span><h1>Create a transaction</h1><p>Set out the item, agreed condition and delivery destination.</p></div></div><form className="form-layout" onSubmit={createTx}><section className="panel form-panel"><div className="form-section-title"><span>01</span><div><h3>Buyer details</h3><p>Who will receive the transaction invitation?</p></div></div><div className="form-grid"><Field label="Buyer name"><input required value={form.buyerName||''} onChange={e=>setForm({...form,buyerName:e.target.value})} placeholder="Full name"/></Field><Field label="Buyer email (optional)"><input type="email" value={form.buyerEmail||''} onChange={e=>setForm({...form,buyerEmail:e.target.value})} placeholder="buyer@example.com"/></Field><Field label="Buyer phone (optional)"><input value={form.buyerPhone||''} onChange={e=>setForm({...form,buyerPhone:e.target.value})} placeholder="+234..."/></Field></div><div className="form-section-title"><span>02</span><div><h3>Item information</h3><p>Be specific. These details become part of the agreement.</p></div></div><div className="form-grid"><Field label="Item name"><input required value={form.description||''} onChange={e=>setForm({...form,description:e.target.value})} placeholder="e.g. Samsung Galaxy A15"/></Field><Field label="Quantity"><input required min="1" type="number" value={form.quantity||''} onChange={e=>setForm({...form,quantity:e.target.value})} placeholder="1"/></Field><Field label="Unit price (₦)"><input required min="1" type="number" value={form.price||''} onChange={e=>setForm({...form,price:e.target.value})} placeholder="220000"/></Field><Field label="Condition"><select value={form.condition||'Brand new'} onChange={e=>setForm({...form,condition:e.target.value})}><option>Brand new</option><option>Used — excellent</option><option>Used — good</option><option>Refurbished — Grade A</option><option>Other</option></select></Field><Field label="Detailed specification"><textarea required value={form.specification||''} onChange={e=>setForm({...form,specification:e.target.value})} placeholder="Model, size, colour, features..."/></Field><Field label="Acceptance / rejection condition"><textarea required value={form.conditionText||''} onChange={e=>setForm({...form,conditionText:e.target.value})} placeholder="What must match the agreement?"/></Field></div>{(form.additionalItems||[]).map((item,index)=><div className="extra-item"><div className="extra-item-head"><b>Additional item {index+2}</b><button type="button" className="text-link" onClick={()=>setForm({...form,additionalItems:form.additionalItems.filter((_,i)=>i!==index)})}><X size={13}/> Remove</button></div><div className="form-grid"><Field label="Item name"><input required value={item.description||''} onChange={e=>{const a=[...form.additionalItems];a[index]={...a[index],description:e.target.value};setForm({...form,additionalItems:a})}}/></Field><Field label="Quantity"><input required min="1" type="number" value={item.quantity||1} onChange={e=>{const a=[...form.additionalItems];a[index]={...a[index],quantity:e.target.value};setForm({...form,additionalItems:a})}}/></Field><Field label="Unit price (₦)"><input required min="1" type="number" value={item.price||''} onChange={e=>{const a=[...form.additionalItems];a[index]={...a[index],price:e.target.value};setForm({...form,additionalItems:a})}}/></Field><Field label="Condition"><select value={item.condition||'Brand new'} onChange={e=>{const a=[...form.additionalItems];a[index]={...a[index],condition:e.target.value};setForm({...form,additionalItems:a})}}><option>Brand new</option><option>Used — excellent</option><option>Used — good</option><option>Refurbished — Grade A</option><option>Other</option></select></Field><Field label="Detailed specification"><textarea required value={item.specification||''} onChange={e=>{const a=[...form.additionalItems];a[index]={...a[index],specification:e.target.value};setForm({...form,additionalItems:a})}}/></Field><Field label="Acceptance / rejection condition"><textarea required value={item.conditionText||''} onChange={e=>{const a=[...form.additionalItems];a[index]={...a[index],conditionText:e.target.value};setForm({...form,additionalItems:a})}}/></Field></div></div>)}<button type="button" className="add-item-btn" onClick={()=>setForm({...form,additionalItems:[...(form.additionalItems||[]),{quantity:1,condition:'Brand new'}]})}><Plus size={15}/> Add another item</button><div className="form-section-title"><span>03</span><div><h3>Delivery details</h3><p>SupplyKey does not provide riders or courier services.</p></div></div><div className="form-grid"><Field label="Destination city"><input required value={form.city||''} onChange={e=>setForm({...form,city:e.target.value})} placeholder="Port Harcourt"/></Field><Field label="Destination state"><select required value={form.state||''} onChange={e=>setForm({...form,state:e.target.value})}><option value="">Select state</option>{NG_STATES.map(s=><option>{s}</option>)}</select></Field><Field label="Expected delivery (days)"><input min="1" type="number" value={form.days||5} onChange={e=>setForm({...form,days:e.target.value})}/></Field><Field label="Delivery fee (₦)" hint="Disabled until the fee payer and refund policy are approved (OD-05)."><input type="number" value="0" disabled/></Field><Field label="Additional terms"><textarea value={form.terms||''} onChange={e=>setForm({...form,terms:e.target.value})} placeholder="Optional transaction-specific terms"/></Field></div></section><aside className="panel summary-panel"><h3>Transaction summary</h3><p>Amounts are calculated again by the backend.</p><div className="summary-line"><span>Quantity</span><b>{form.quantity||'—'}</b></div><div className="summary-line"><span>Unit price</span><b>{form.price?money(Number(form.price)*100):'—'}</b></div><div className="summary-line"><span>Delivery fee</span><b>{money(Number(form.deliveryFee||0)*100)}</b></div><div className="summary-total"><span>Estimated total</span><b>{form.price&&form.quantity?money(([form,...(form.additionalItems||[])].reduce((sum,i)=>sum+(Number(i.price||0)*Number(i.quantity||0)),0)+Number(form.deliveryFee||0))*100):'—'}</b></div><div className="notice"><ShieldCheck size={17}/><span>Creating a draft does not collect payment or confirm funding.</span></div><Button type="submit" disabled={busy}>Create draft <ArrowRight size={16}/></Button></aside></form></>}
- {page==='detail'&&selected&&<TransactionDetail tx={selected} role={role} busy={busy} onAction={act} onUpload={uploadEvidence} files={files} setFiles={setFiles} setModal={setModal} setForm={setForm} refresh={async()=>{setSelected(await api.transaction(selected.id));refresh()}}/>}
- {page==='activity'&&<><div className="page-heading"><div><span className="eyebrow">ACCOUNT ACTIVITY</span><h1>Activity</h1><p>Recent events recorded in this demo workspace.</p></div></div><section className="panel">{api.mode==='mock'?<ActivityFeed items={api.getDemoState().audit}/>:<Empty title="Activity feed not provided" text="The current API specification does not define a participant-wide activity feed. Transaction-specific details remain available in each record."/>}</section></>}
- {page==='cases'&&<><div className="page-heading"><div><span className="eyebrow">MODERATION</span><h1>Case queue</h1><p>Review acceptance submissions and active disputes.</p></div></div><div className="stats-grid compact"><div className="stat-card"><span>All open cases</span><strong>{queue.length}</strong></div><div className="stat-card"><span>Acceptance reviews</span><strong>{queue.filter(q=>q.status==='SUBMITTED_FOR_REVIEW').length}</strong></div><div className="stat-card"><span>Disputes</span><strong>{queue.filter(q=>q.status!=='SUBMITTED_FOR_REVIEW').length}</strong></div></div><section className="panel table-panel"><QueueTable items={queue} onOpen={openCase} loading={loading}/>{(queueCursors.acceptance||queueCursors.disputes)&&<div className="pagination-actions"><Button variant="secondary" disabled={loadingMore} onClick={loadMoreQueue}>{loadingMore?'Loading…':'Load more cases'}</Button></div>}</section></>}
- {page==='exceptions'&&<><div className="page-heading"><div><span className="eyebrow">FINANCIAL OPERATIONS</span><h1>Financial exceptions</h1><p>Review failed or unknown instructions, unsecured payments and reconciliation mismatches.</p></div></div><section className="panel table-panel">{role==='SENIOR_MODERATOR'?<><ExceptionTable items={exceptions} onAction={act}/>{exceptionCursor&&<div className="pagination-actions"><Button variant="secondary" disabled={loadingMore} onClick={loadMoreExceptions}>{loadingMore?'Loading…':'Load more exceptions'}</Button></div>}</>:<Empty title="Senior moderator access required" text="Financial exceptions are visible to senior moderators only."/>}</section></>}{page==='audit'&&<><div className="page-heading"><div><span className="eyebrow">ACCOUNTABILITY</span><h1>Audit trail</h1><p>{role==='ADMIN'?'Administrative audit events returned by the backend.':'Actions recorded by the local adapter in this demo session.'}</p></div></div><section className="panel">{role==='ADMIN'?adminAudit.length?<><ActivityFeed items={adminAudit}/>{adminAuditCursor&&<div className="pagination-actions"><Button variant="secondary" disabled={loadingMore} onClick={loadMoreAdminAudit}>{loadingMore?'Loading…':'Load more audit events'}</Button></div>}</>:<Empty title="No audit events returned" text="The admin audit endpoint returned no events."/>:api.mode==='mock'?<ActivityFeed items={api.getDemoState().audit}/>:<Empty title="Activity feed not provided" text="The current API specification does not define a participant-wide activity feed. Transaction-specific details remain available in each record."/>}</section></>}
- </div></main>
- {modal&&<Modal name={modal} onClose={()=>{setModal('');setError('')}} form={form} setForm={setForm} role={role} busy={busy} onSubmit={async(e)=>{e.preventDefault();try{if(modal==='case'){const request=buildModeratorActionRequest({caseItem:form.case,detail:form.detail,action:form.caseAction,fields:form});await act(request.path,request.body,request.headers);}setModal('')}catch(e){setForm(prev=>({...prev,submitError:e?.data?.error?.message||e?.message||'The moderation action failed. Please try again.'}));}}} onRole={chooseRole} onLogout={async()=>{try{await api.action('/auth/logout')}catch(e){setError(e?.data?.error?.message||'Server sign-out could not be confirmed; the local session was cleared.')}sessionStorage.clear();setPage('login');setModal('')}} onMfa={handleMfa} onWorkspace={chooseWorkspace} onAction={act} onDispute={raiseDispute} notifications={notifications} setNotifications={setNotifications}/>}
- {toast&&<div className="toast"><CheckCircle2 size={17}/>{toast}{shareUrl&&<a href={shareUrl} target="_blank" rel="noreferrer">Open invitation <ArrowUpRight size={13}/></a>}</div>}
- </div>
+import React, { useEffect, useMemo, useState } from "react";
+import {
+  Activity,
+  AlertCircle,
+  ArrowDownLeft,
+  ArrowLeft,
+  ArrowRight,
+  ArrowUpRight,
+  Bell,
+  Box,
+  BriefcaseBusiness,
+  Check,
+  CheckCircle2,
+  ChevronDown,
+  ChevronRight,
+  Clock,
+  FileCheck,
+  FileText,
+  Filter,
+  HelpCircle,
+  Home,
+  Inbox,
+  LogOut,
+  Menu,
+  MessageSquare,
+  Package,
+  Plus,
+  RefreshCw,
+  Search,
+  Shield,
+  ShieldCheck,
+  ShoppingBag,
+  Truck,
+  Upload,
+  Wallet,
+  X,
+  AlertTriangle,
+  Users,
+  ClipboardList,
+  Settings,
+  MoreHorizontal,
+} from "lucide-react";
+import { api } from "./lib/api";
+import { settlementRows } from "./lib/settlement";
+import { buildModeratorActionRequest } from "./lib/moderation";
+import {
+  money,
+  titleCase,
+  NG_STATES,
+  REASONS,
+  TX_STATES,
+  dateTime,
+  dateOnly,
+} from "./lib/constants";
+const statusTone = (s) =>
+  [
+    "FUNDED",
+    "COMPLETED",
+    "FUNDS_SECURED",
+    "ACCEPTED_CONFIRMED",
+    "SETTLED_RELEASED",
+    "SETTLED_REFUNDED",
+    "RETURN_RECEIPT_CONFIRMED",
+    "SUCCEEDED",
+    "SUBMITTED",
+  ].includes(s)
+    ? "green"
+    : [
+          "IN_DISPUTE",
+          "DISPUTED",
+          "FAILED",
+          "CANCELLED",
+          "OVERDUE",
+          "UNKNOWN",
+        ].includes(s)
+      ? "red"
+      : [
+            "AWAITING_PAYMENT",
+            "PENDING",
+            "SUBMITTED_FOR_REVIEW",
+            "DISPATCHED",
+            "RECEIPT_CONFIRMED",
+            "PENDING_APPROVAL",
+            "SETTLEMENT_PENDING",
+            "REFUND_PENDING",
+            "RELEASE_PENDING",
+            "PAYMENT_RECEIVED",
+            "REJECTED_AWAITING_RETURN",
+          ].includes(s)
+        ? "amber"
+        : "blue";
+function Badge({ children }) {
+  return (
+    <span className={`badge ${statusTone(children)}`}>
+      <i />
+      {titleCase(children)}
+    </span>
+  );
 }
-function EvidencePreview({evidence}){const[url,setUrl]=useState(''),[error,setError]=useState(''),[loading,setLoading]=useState(true);useEffect(()=>{let active=true,objectUrl='';setLoading(true);setError('');api.evidenceFile(evidence.id).then(blob=>{if(!active)return;objectUrl=URL.createObjectURL(blob);setUrl(objectUrl);}).catch(e=>{if(active)setError(e?.data?.error?.message||e.message||'Unable to retrieve the evidence file.');}).finally(()=>{if(active)setLoading(false)});return()=>{active=false;if(objectUrl)URL.revokeObjectURL(objectUrl)}},[evidence.id]);if(loading)return <small className="muted">Loading private evidence file…</small>;if(error)return <div className="alert error" role="alert">Evidence unavailable: {error}</div>;if(!url)return null;if(['image/jpeg','image/png'].includes(evidence.mime_type))return <a href={url} target="_blank" rel="noreferrer" className="evidence-preview-link"><img src={url} alt={evidence.filename||'Uploaded evidence'} className="evidence-preview-image"/><span>Open full-size image</span></a>;if(evidence.mime_type==='application/pdf')return <div className="evidence-preview-document"><iframe title={evidence.filename||'Evidence PDF'} src={url}/><a href={url} target="_blank" rel="noreferrer">Open PDF in a new tab</a></div>;return <a href={url} download={evidence.filename||'evidence'} target="_blank" rel="noreferrer" className="evidence-view">Open / download {evidence.filename||'file'}</a>}
-function ApprovalPanel({items,onAction}){const pending=(items||[]).filter(i=>i.status==='PENDING_APPROVAL');if(!pending.length)return null;return <section className="panel approval-panel"><div className="panel-head"><div><h3>Awaiting second approval</h3><p>Approve or decline only as a different senior moderator.</p></div><Badge>PENDING_APPROVAL</Badge></div>{pending.map(i=><ApprovalRow item={i} onAction={onAction}/>)}</section>}
-function ApprovalRow({item,onAction}){const[reason,setReason]=useState('');return <div className="approval-row"><div><b>{item.reference}</b><small>{item.type} · {money(item.amount_kobo)}</small></div><Badge>{item.status}</Badge><Button onClick={()=>onAction(`/mod/${item.type.toLowerCase()}s/${item.id}/approve`,{},item.version!==undefined?{'If-Match':String(item.version)}:{})}>Approve</Button><div className="decline-control"><input placeholder="Reason to decline" value={reason} onChange={e=>setReason(e.target.value)}/><Button variant="secondary" disabled={!reason.trim()} onClick={()=>onAction(`/mod/${item.type.toLowerCase()}s/${item.id}/decline`,{reason},item.version!==undefined?{'If-Match':String(item.version)}:{})}>Decline</Button></div></div>}
-function TransactionTable({items,onOpen}){if(!items.length)return <Empty title="No transactions found" text="Transactions will appear here once they are created or shared."/>;return <div className="table-wrap"><table><thead><tr><th>REFERENCE</th><th>PARTIES</th><th>DESTINATION</th><th>AMOUNT</th><th>STATUS</th><th/></tr></thead><tbody>{items.map(t=><tr key={t.id} onClick={()=>onOpen(t)}><td><b className="ref">{t.reference}</b><small>{dateOnly(t.created_at)}</small></td><td><b>{t.buyer}</b><small>with {t.supplier}</small></td><td>{t.destination}</td><td className="amount">{money(t.total_payable_kobo)}</td><td><Badge>{t.status}</Badge></td><td><button className="row-arrow"><ChevronRight size={17}/></button></td></tr>)}</tbody></table></div>}
-function ExceptionTable({items,onAction}){if(!items.length)return <Empty title="No financial exceptions" text="Unsecured payments, failed or unknown instructions and reconciliation mismatches will appear here when the backend reports them."/>;return <div className="exception-list">{items.map(x=><ExceptionRow key={x.id} item={x} onAction={onAction}/>)}</div>}
-function ExceptionRow({item,onAction}){const[action,setAction]=useState(item.allowed_actions?.[0]||'');const[reason,setReason]=useState('');return <div className="exception-row"><div><b>{item.id} · {item.reference}</b><p>{item.reason}</p><small>{titleCase(item.type)} · {titleCase(item.status)}</small></div>{item.allowed_actions?.length>0&&<div className="exception-controls"><select value={action} onChange={e=>setAction(e.target.value)}>{item.allowed_actions.map(a=><option value={a}>{a}</option>)}</select><input value={reason} onChange={e=>setReason(e.target.value)} placeholder="Resolution reason"/><Button disabled={!reason.trim()||!action} onClick={()=>onAction(`/mod/financial-exceptions/${item.id}/resolve`,{action,reason},item.version!==undefined?{'If-Match':String(item.version)}:{})}>Resolve</Button></div>}</div>}
-function QueueTable({items,onOpen,loading}){if(!items.length)return <Empty title={loading?'Loading cases':'Queue is clear'} text="No cases currently require your attention."/>;return <div className="table-wrap"><table><thead><tr><th>CASE</th><th>TRANSACTION</th><th>PARTIES</th><th>REVIEW WINDOW</th><th>STATUS</th><th/></tr></thead><tbody>{items.map(q=><tr key={q.id} onClick={()=>onOpen(q)}><td><b className="ref">{q.id}</b><small>{q.item}</small></td><td><b>{q.reference}</b><small>{money(q.amount_kobo)}</small></td><td><b>{q.buyer}</b><small>with {q.supplier}</small></td><td>{q.decision_overdue?<span className="alert error">Decision overdue · {q.decision_deadline_at?dateTime(q.decision_deadline_at):''}</span>:<>{titleCase(q.window_status)}{q.decision_deadline_at&&<small>Decision due {dateTime(q.decision_deadline_at)}</small>}</>}</td><td><Badge>{q.status}</Badge></td><td><ChevronRight size={17}/></td></tr>)}</tbody></table></div>}
-function Empty({title,text}){return <div className="empty"><div><Inbox size={24}/></div><b>{title}</b><p>{text}</p></div>}
-function ActivityFeed({items}){return items?.length?<div className="feed">{items.map(a=><div className="feed-item"><div className="feed-dot"><Check size={14}/></div><div><b>{titleCase(a.action)}</b><p>{a.detail}</p><small>{a.actor} · {dateTime(a.at)}</small></div></div>)}</div>:<Empty title="No activity yet" text="Actions and important changes will be recorded here."/>}
-function DisputePanel({tx,role}){
- const[items,setItems]=useState([]),[loadError,setLoadError]=useState('');const dispute=tx.dispute;
- const ids=[...new Set([...(dispute?.lines||[]).flatMap(x=>x.evidence_ids||[]),...(dispute?.evidence_submissions||[]).flatMap(x=>x.evidence_ids||[]),...(tx.decisions||[]).filter(x=>x.dispute_id===dispute?.id).flatMap(x=>x.rejection_evidence_ids||[]),...(tx.returns||[]).flatMap(r=>[...(r.handover_evidence_ids||[]),...(r.additional_evidence_ids||[]),...(r.supplier_evidence_ids||[])])])];
- useEffect(()=>{let active=true;if(!dispute?.id){setItems([]);return()=>{active=false}}Promise.all(ids.map(id=>api.evidence(id))).then(rows=>{if(active){setItems(rows);setLoadError('')}}).catch(e=>{if(active)setLoadError(e.data?.error?.message||e.message||'Could not load dispute evidence.')});return()=>{active=false}},[dispute?.id,ids.join('|')]);
- if(!dispute?.id)return null;
- const ret=(tx.returns||[]).find(r=>r.id===tx.return_id)||(tx.returns||[]).at(-1);const refund=tx.settlement?.dispute_refund_status||ret?.refund_eligibility_status||'Not authorized';
- if(role==='SUPPLIER')return <section className="panel detail-panel supplier-dispute-panel"><div className="panel-head"><div><span className="eyebrow">ACTION REQUIRED · {tx.reference}</span><h3>Buyer rejected the package.</h3><p>This return and its receipt must be recorded separately.</p></div><Badge>{dispute.status||'UNDER_REVIEW'}</Badge></div><div className="summary-line"><span>Rejection status</span><b>{titleCase(dispute.status||'Submitted')}</b></div><div className="summary-line"><span>Return status</span><b>{ret?.status?titleCase(ret.status):dispute.return_required?'Awaiting buyer return':'Awaiting moderator decision'}</b></div><div className="summary-line"><span>Receipt confirmation</span><b>{ret?.supplier_receipt_confirmed_at?`Confirmed · ${dateTime(ret.supplier_receipt_confirmed_at)}`:'Not confirmed'}</b></div><div className="summary-line"><span>Dispute refund</span><b>{titleCase(refund)}</b></div>{ret?.status==='CONTESTED'&&<div className="alert error">You disputed the return. A moderator must review the evidence; no refund will be released automatically.</div>}{ret?.supplier_receipt_confirmed_at&&<div className="notice">Your receipt confirmation was recorded at {dateTime(ret.supplier_receipt_confirmed_at)}.</div>}{loadError&&<div className="alert error" role="alert">{loadError}</div>}</section>;
- const events=[...(dispute.evidence_submissions||[]).map(x=>({at:x.created_at,title:x.party==='BUYER'?'Rejection submitted':'Supplier response submitted',detail:x.statement||x.kind})),...(tx.returns||[]).flatMap(r=>[{at:r.handover_committed_at,title:'Return handover submitted',detail:r.tracking_ref||'Buyer submitted return evidence'},{at:r.supplier_receipt_confirmed_at,title:'Supplier confirmed receipt',detail:'Physical receipt confirmed by supplier' }].filter(x=>x.at)),...(dispute.decision?.created_at?[{at:dispute.decision.created_at,title:'Moderator decision recorded',detail:dispute.decision.reason}]:[]),...(dispute.refund_authorized_at?[{at:dispute.refund_authorized_at,title:'Refund authorized',detail:`Authorized by moderator ${dispute.refund_authorized_by||''}`}]:[])].sort((a,b)=>new Date(a.at)-new Date(b.at));
- return <section className="panel detail-panel buyer-dispute-panel"><div className="panel-head"><div><span className="eyebrow">YOUR REJECTION</span><h3>Rejection submitted</h3><p>Your case is being reviewed. Refund completion is confirmed only by the payment provider.</p></div><Badge>{dispute.status||'UNDER_REVIEW'}</Badge></div><div className="summary-line"><span>Case status</span><b>{titleCase(dispute.status||'Submitted')}</b></div><div className="summary-line"><span>Return progress</span><b>{ret?.supplier_receipt_confirmed_at?'Supplier confirmed receipt':ret?.handover_committed_at?'Return handed over':dispute.return_required?'Return required':'Awaiting moderator decision'}</b></div><div className="summary-line"><span>Refund progress</span><b>{titleCase(refund)}</b></div>{dispute.decision_deadline_at&&<div className="summary-line"><span>Moderator decision due</span><b>{dateTime(dispute.decision_deadline_at)}</b></div>}{dispute.decision_overdue&&<div className="alert error" role="alert">Moderator decision overdue. The case is escalated; no automatic refund or payout is triggered.</div>}{dispute.return_confirmation_overdue&&<div className="alert error" role="alert">Supplier receipt confirmation is overdue. Refund remains blocked.</div>}{dispute.decision?.reason&&<div className="case-note"><b>Moderator decision</b><p>{dispute.decision.reason}</p></div>}<b>Case progress</b>{events.length?<ActivityFeed items={events.map(x=>({action:x.title,detail:x.detail,actor:'SupplyKey workflow',at:x.at}))}/>:<p className="muted">Your rejection has been recorded. Updates will appear here as the case progresses.</p>}{loadError&&<div className="alert error" role="alert">{loadError}</div>}<b>Submitted evidence</b>{items.length?items.map(ev=><div className="case-evidence"><div><b>{ev.filename}</b><small>{ev.purpose} · {ev.status} · {ev.size_bytes} bytes</small></div><EvidencePreview evidence={ev}/></div>):!loadError&&<p className="muted">No evidence references are attached to this dispute yet.</p>}</section>;
+function Button({
+  children,
+  variant = "primary",
+  icon: Icon,
+  disabled,
+  onClick,
+  type = "button",
+}) {
+  return (
+    <button
+      type={type}
+      disabled={disabled}
+      onClick={onClick}
+      className={`btn ${variant}`}
+    >
+      {Icon && <Icon size={16} />} {children}
+    </button>
+  );
 }
-function TransactionDetail({tx,role,busy,onAction,onUpload,files,setFiles,setModal,setForm,refresh}){const[tab,setTab]=useState('overview'),[agreementData,setAgreementData]=useState(null),[returnData,setReturnData]=useState(null),[instructions,setInstructions]=useState([]),[quantity,setQuantity]=useState(1),[reason,setReason]=useState(''),[reasonCode,setReasonCode]=useState('SPEC_DISAGREEMENT'),[courier,setCourier]=useState(''),[rider,setRider]=useState(''),[tracking,setTracking]=useState(''),[detailLoadError,setDetailLoadError]=useState('');const isBuyer=role==='BUYER',isSupplier=role==='SUPPLIER';const allowed=tx.allowed_actions||[];const evidence=async purpose=>await onUpload(purpose);useEffect(()=>{let active=true;setDetailLoadError('');if(tab==='agreement')api.agreement(tx.id).then(x=>{if(active)setAgreementData(x)}).catch(e=>{if(active){setAgreementData(null);setDetailLoadError(e?.data?.error?.message||e.message||'Unable to load the agreement.') }});if(tx.return_id)api.returnDetail(tx.return_id).then(x=>{if(active)setReturnData(x)}).catch(e=>{if(active){setReturnData(null);setDetailLoadError(e?.data?.error?.message||e.message||'Unable to load the return record.')}});Promise.all([api.financialInstructions(tx.id,'payouts'),api.financialInstructions(tx.id,'refunds')]).then(([p,r])=>{if(active)setInstructions([...(p||[]),...(r||[])])}).catch(e=>{if(active){setInstructions([]);setDetailLoadError(e?.data?.error?.message||e.message||'Unable to load payout and refund instructions.')}});return()=>{active=false}},[tab,tx.id,tx.return_id]);const invoke=async(path,body,headers)=>{await onAction(`/transactions/${tx.id}/${path}`,body,headers);await refresh()};const activePayment=tx.payments?.at(-1),hasPendingPayment=tx.payments?.some(p=>['PENDING','PAYMENT_RECEIVED','UNKNOWN'].includes(p.status));useEffect(()=>{if(!hasPendingPayment)return;let active=true,inFlight=false;const poll=async()=>{if(inFlight)return;inFlight=true;try{if(activePayment?.payment_id){await api.action(`/transactions/${tx.id}/payments/${activePayment.payment_id}/refresh`,{});}if(active)await refresh();}catch(e){if(active)setDetailLoadError(e?.data?.error?.message||e.message||'Payment status refresh failed. The last confirmed state is still shown.')}finally{inFlight=false;}};const timer=setInterval(poll,10000);return()=>{active=false;clearInterval(timer)}},[tx.id,hasPendingPayment,activePayment?.payment_id,activePayment?.mode]);
- return <><div className="detail-heading"><div><button className="back-link" onClick={()=>history.back()}><ArrowLeft size={15}/> Back</button><div className="detail-title"><div><span className="eyebrow">TRANSACTION · {tx.reference}</span><h1>{tx.reference}</h1><p>{tx.buyer} <span>with</span> {tx.supplier}</p></div><Badge>{tx.status}</Badge></div></div><button className="outline-btn" onClick={()=>setTab('agreement')}><FileText size={16}/> View agreement</button></div><div className="detail-layout"><div className="detail-main"><div className="tabs"><button className={tab==='overview'?'selected':''} onClick={()=>setTab('overview')}>Overview</button><button className={tab==='agreement'?'selected':''} onClick={()=>setTab('agreement')}>Agreement</button><button className={tab==='evidence'?'selected':''} onClick={()=>setTab('evidence')}>Evidence & delivery</button><button className={tab==='history'?'selected':''} onClick={()=>setTab('history')}>History</button></div>
- {detailLoadError&&<div className="alert error" role="alert">{detailLoadError}</div>}{tab==='overview'&&<><DisputePanel tx={tx} role={role}/><section className="panel detail-panel"><div className="panel-head"><div><h3>Transaction progress</h3><p>Transaction funding state and item-lot progress are separate backend states.</p></div><Badge>{tx.status}</Badge></div><Timeline status={tx.status}/></section><section className="panel detail-panel"><div className="panel-head"><div><h3>Quantity lots</h3><p>Fulfilment status is tracked per quantity lot.</p></div></div>{tx.lots?.length?tx.lots.map(l=><div className="requirement"><div><b>{l.id} · {l.quantity} unit(s)</b><small>Money status: {titleCase(l.money_status)}</small></div><Badge>{l.item_status}</Badge></div>):<p className="muted">No quantity lots returned yet.</p>}</section>{tx.evidence_requests?.filter(r=>r.status==='OPEN').map(r=><section className="panel detail-panel"><div className="notice"><AlertCircle size={16}/> Evidence requested from {r.party}: {r.question} · Due {dateTime(r.due_at)}</div></section>)}{tx.decisions?.map(d=><section className="panel detail-panel"><div className="panel-head"><div><h3>Acceptance evidence window</h3><p>Both parties can add evidence or waive the window.</p></div><Badge>{d.evidence_window.status}</Badge></div><div className="summary-line"><span>Window closes</span><b>{d.evidence_window.ends_at?dateTime(d.evidence_window.ends_at):'Not set'}</b></div><div className="summary-line"><span>Buyer waiver</span><b>{d.waivers?.BUYER?'Waived':'Not waived'}</b></div><div className="summary-line"><span>Supplier waiver</span><b>{d.waivers?.SUPPLIER?'Waived':'Not waived'}</b></div></section>)}{(tx.dispatch_deadline_at||tx.inspection_deadline_at||tx.return_confirmation_deadline_at)&&<section className="panel detail-panel"><div className="panel-head"><div><h3>Important deadlines</h3><p>Deadlines are calculated and returned by the backend.</p></div><Clock size={17}/></div>{tx.dispatch_deadline_at&&<div className="summary-line"><span>Dispatch deadline</span><b>{dateTime(tx.dispatch_deadline_at)}</b></div>}{tx.inspection_deadline_at&&<div className="summary-line"><span>Inspection deadline</span><b>{dateTime(tx.inspection_deadline_at)}</b></div>}{tx.return_confirmation_deadline_at&&<div className="summary-line"><span>Return confirmation deadline</span><b>{dateTime(tx.return_confirmation_deadline_at)}</b></div>}</section>}{tx.dispatches?.length>0&&<section className="panel detail-panel"><div className="panel-head"><div><h3>Dispatch tracking</h3><p>Supplier declarations and courier details.</p></div><Truck size={17}/></div>{tx.dispatches.map(d=><div className="dispatch-card"><div className="summary-line"><span>Courier</span><b>{d.courier_name||'Not supplied'}</b></div><div className="summary-line"><span>Rider</span><b>{d.rider_name||'Not supplied'} {d.rider_phone||''}</b></div><div className="summary-line"><span>Tracking reference</span><b>{d.tracking_ref||'Not supplied'}</b></div><small>Declared {d.declared_at?dateTime(d.declared_at):'time not supplied'}</small></div>)}</section>}{returnData&&<section className="panel detail-panel"><div className="panel-head"><div><h3>Return record</h3><p>Return quantities and server-controlled confirmation deadline.</p></div><Badge>{returnData.status||'RETURN_STATUS_UNAVAILABLE'}</Badge></div>{returnData.lines?.map(l=><div className="summary-line"><span>{tx.items.find(i=>i.id===l.item_id)?.description||l.item_id}</span><b>{l.quantity} unit(s)</b></div>)}{returnData.handover_committed_at&&<div className="summary-line"><span>Handover committed</span><b>{dateTime(returnData.handover_committed_at)}</b></div>}{returnData.confirmation_deadline_at&&<div className="summary-line"><span>Confirmation deadline</span><b>{dateTime(returnData.confirmation_deadline_at)}</b></div>}<ReturnAdditionalEvidenceAction tx={tx} role={role} onAction={onAction} refresh={refresh} busy={busy}/></section>}{instructions.length>0&&<section className="panel detail-panel"><div className="panel-head"><div><h3>Payout and refund instructions</h3><p>Instruction status only; this is not proof of settlement.</p></div><Wallet size={17}/></div>{instructions.map(i=><div className="requirement"><div><b>{i.type}{i.id?` · ${i.id}`:''}</b><small>{i.amount_kobo!==undefined?money(i.amount_kobo):'Status only'} · {i.origin_type||i.refund_classification||'Settlement progress'}</small></div><Badge>{i.status}</Badge></div>)}</section>}<section className="panel detail-panel"><div className="panel-head"><div><h3>Items in this transaction</h3><p>Agreed specifications and quantities.</p></div></div>{tx.items.map(i=><div className="item-row"><div className="item-thumb"><Package size={23}/></div><div className="item-info"><b>{i.description}</b><p>{i.specification}</p><small>Qty {i.quantity} · {money(i.unit_price_kobo)} each</small></div><b>{money(i.quantity*i.unit_price_kobo)}</b></div>)}</section>{tx.dispute&&<section className="panel detail-panel"><div className="panel-head"><div><h3>Dispute summary</h3><p>{titleCase(tx.dispute.reason_code)}</p></div><Badge>{tx.dispute.status}</Badge></div><p>{tx.dispute.statement}</p><div className="notice"><Clock size={16}/> Evidence window ends {tx.dispute.window_ends_at?dateTime(tx.dispute.window_ends_at):'when set by backend'}.</div>{allowed.includes('add_dispute_evidence')&&<DisputeEvidenceAction dispute={tx.dispute} tx={tx} busy={busy} onAction={onAction} refresh={refresh}/ >}</section>}</>}
- {tab==='agreement'&&<section className="panel detail-panel"><div className="panel-head"><div><h3>Agreement versions</h3><p>Review the exact version and content hash before confirming.</p></div><FileCheck/></div>{agreementData?.versions?.length?agreementData.versions.map(v=><div className="agreement-item"><b>Version {v.version||'—'} {v.id===agreementData.current_version?.id&&<Badge>Current</Badge>}</b><p>{v.terms||'Item specifications, conditions, delivery and general terms are included in this version.'}</p><div className="agreement-meta"><span>Version ID: {v.id}</span><span>Hash: {(v.content_hash||'Not available').slice(0,22)}…</span></div>{v.created_at&&<small>{dateTime(v.created_at)}</small>}</div>):<div className="empty"><b>Agreement versions unavailable</b><p>The backend did not return a version history. Reload before confirming.</p></div>}{isBuyer&&allowed.includes('accept_invitation')&&tx.status==='AWAITING_BUYER_AGREEMENT'&&<div className="notice"><ShieldCheck size={16}/> This transaction is assigned to your account, but the supplier invitation still needs your acceptance. Accepting does not confirm the agreement or start payment.<Button disabled={busy} onClick={()=>invoke('invitation/accept',{})}>Accept supplier invitation <ArrowRight size={16}/></Button></div>}{isBuyer&&allowed.includes('agree')&&tx.status==='AWAITING_BUYER_AGREEMENT'&&agreementData?.current_version?.id&&<Button disabled={busy||!agreementData.current_version.content_hash} onClick={()=>invoke('agreement/confirm',{agreement_version_id:agreementData.current_version.id,content_hash:agreementData.current_version.content_hash})}>Confirm current agreement <Check size={16}/></Button>}{agreementData?.buyer_confirmation&&<div className="notice"><CheckCircle2 size={16}/> Buyer confirmed this agreement on {dateTime(agreementData.buyer_confirmation.confirmed_at)}.</div>}</section>}
- {tab==='evidence'&&<><section className="panel detail-panel"><div className="panel-head"><div><h3>Delivery photographs</h3><p>Photos are evidence only; receipt must be confirmed separately.</p></div><CameraIcon/></div>{tx.delivery_photo_requirements?.length?tx.delivery_photo_requirements.map(r=><div className="requirement"><div><b>{titleCase(r.party_role)} photographs</b><small>Due {r.due_at?dateTime(r.due_at):'Date not supplied'}</small></div><Badge>{r.status}</Badge>{r.party_role===role&&['PENDING','OVERDUE'].includes(r.status)&&<DeliveryPhotoAction txId={tx.id} requirement={r} busy={busy} onAction={onAction} refresh={refresh}/>}</div>):<Empty title="No delivery photo requirements" text="Requirements are created by the backend at dispatch and receipt confirmation."/>}</section><section className="panel detail-panel"><h3>Evidence handling</h3><p className="muted">Evidence is uploaded through the relevant dispatch, delivery, acceptance, rejection, return or dispute action. A file that is not linked to an event is not evidence for that event.</p></section></>}
- {tab==='history'&&<section className="panel detail-panel"><h3>Transaction events</h3>{tx.timeline?.length?<ActivityFeed items={tx.timeline}/>:api.mode==='mock'?<ActivityFeed items={api.getDemoState().audit.filter(a=>a.detail===tx.reference)}/>:<Empty title="Transaction event history unavailable" text="The live transaction detail contract does not include an event timeline."/>}</section>}
- </div><aside className="detail-side"><section className="panel side-panel"><h3>Transaction summary</h3><div className="summary-line"><span>Goods total</span><b>{money(tx.goods_total_kobo)}</b></div><div className="summary-line"><span>Delivery fee</span><b>{money(tx.delivery_fee_kobo)}</b></div><div className="summary-line"><span>Platform fee</span><b>{money(tx.platform_fee_kobo||0)}</b></div><div className="summary-total"><span>Total payable</span><b>{money(tx.total_payable_kobo)}</b></div><div className="small-note">All monetary values are displayed from backend kobo amounts.</div></section><SettlementVisibility settlement={tx.settlement} role={role}/><section className="panel side-panel"><h3>Next actions</h3>{isBuyer&&allowed.includes('pay')&&<Button disabled={busy} onClick={async()=>{await onAction(`/transactions/${tx.id}/payments`,{});await refresh()}} icon={Wallet}>Start payment</Button>}{isBuyer&&tx.status==='AWAITING_PAYMENT'&&!allowed.includes('pay')&&<p className="muted">No payment action is currently available.</p>}{isSupplier&&allowed.includes('send')&&<Button disabled={busy} onClick={()=>invoke('send',{})}>Share agreement <ArrowRight size={16}/></Button>}{isSupplier&&allowed.includes('dispatch')&&<DispatchAction tx={tx} busy={busy} invoke={invoke} evidence={evidence}/ >}{isBuyer&&allowed.includes('confirm_received')&&<ReceiptAction tx={tx} busy={busy} invoke={invoke}/ >}{isBuyer&&allowed.includes('submit_decisions')&&<DecisionAction tx={tx} busy={busy} invoke={invoke} onAction={onAction} refresh={refresh} evidence={evidence}/ >}{isBuyer&&allowed.includes('open_return')&&<Button disabled={busy} onClick={()=>invoke('returns',{lines:tx.lots.filter(l=>l.item_status==='REJECTED_AWAITING_RETURN'&&l.return_authorized).map(l=>({lot_id:l.id,item_id:l.item_id,quantity:l.quantity}))})}>Open return</Button>}{isBuyer&&allowed.includes('submit_handover_evidence')&&<ReturnAction tx={tx} busy={busy} onAction={onAction} refresh={refresh}/ >}{isSupplier&&allowed.includes('confirm_return_receipt')&&<ReturnReceiptAction tx={tx} busy={busy} onAction={onAction} refresh={refresh}/ >}{isSupplier&&allowed.includes('contest_return')&&<ContestReturnAction tx={tx} busy={busy} onAction={onAction} refresh={refresh}/ >}{allowed.includes('raise_dispute')&&<Button variant="secondary" disabled={busy} onClick={()=>{setForm({txId:tx.id,itemId:tx.items[0]?.id,quantity:1,reasonCode:'SPEC_DISAGREEMENT'});setModal('dispute')}}><Shield size={16}/> Raise a dispute</Button>}{allowed.includes('add_review_evidence')&&<ReviewEvidenceAction tx={tx} busy={busy} onAction={onAction} refresh={refresh}/ >}{allowed.includes('waive_window')&&<WaiveWindowAction tx={tx} busy={busy} onAction={onAction} refresh={refresh}/ >}{allowed.includes('add_dispute_evidence')&&<DisputeEvidenceAction dispute={tx.dispute} tx={tx} busy={busy} onAction={onAction} refresh={refresh}/>}{allowed.includes('waive_dispute_window')&&<WaiveDisputeWindowAction tx={tx} busy={busy} onAction={onAction} refresh={refresh}/>}{tx.payments?.length>0&&<PaymentStatusNotice payment={tx.payments.at(-1)} tx={tx} role={role} invoke={invoke} allowed={allowed}/>}{!allowed.length&&<p className="muted">No actions are currently available for your role and this transaction state.</p>}</section><div className="side-help"><ShieldCheck size={18}/><div><b>Remember</b><p>SupplyKey does not arrange delivery. Keep your courier details and evidence within the transaction record.</p></div></div></aside></div></>}
-function SettlementVisibility({settlement,role}){const rows=settlementRows(settlement,role);if(!rows.length)return null;return <section className="panel side-panel"><h3>Settlement visibility</h3>{rows.map(({label,value})=><div className="summary-line"><span>{label}</span><b>{typeof value==='number'?money(value):(String(value).includes(' · ')||String(value).includes('; ')?String(value):titleCase(String(value)))}</b></div>)}<div className="small-note">Statuses reflect backend financial instructions; only provider-confirmed success counts as settled.</div></section>}
-function PaymentStatusNotice({payment,tx,role,invoke,allowed}){const checkout=payment.checkout||{};const isPaga=String(payment.mode||checkout.mode||'').startsWith('PAGA_');const isBuyer=role==='BUYER';const content={PENDING:isPaga?['Awaiting bank transfer','Transfer the exact amount to the Paga account below. SupplyKey will verify the callback and account balance.']:['Confirming payment','The provider attempt is pending. Funding has not been confirmed.'],PAYMENT_RECEIVED:['Payment received, confirming secure holding','Collection is reported, but the backend has not confirmed secured funds.'],UNKNOWN:['Payment outcome unknown','Do not retry or assume funds are secured. The backend must reconcile the ambiguous provider outcome.'],FAILED:['Payment failed','The provider reported failure. The provider did not confirm a usable payment account.'],EXPIRED:['Payment attempt expired','No funding is confirmed. Start another attempt only if the backend allows it.'],FUNDS_SECURED:['Payment verified · funds secured','SupplyKey has verified the payment and secured the funds for this transaction.']}[payment.status]||['Payment status',`Current status: ${payment.status}`];return <div className={`payment-pending ${payment.status==='UNKNOWN'?'payment-unknown':''}`}><Clock size={17}/><div><b>{content[0]}</b><small>{content[1]}</small><small>Provider status: {payment.status}{payment.mode?` · ${payment.mode}`:''}</small>{isBuyer&&isPaga&&checkout.account_number&&payment.status==='PENDING'&&<div className="paga-transfer-details"><small>Bank: <b>{checkout.bank_name||'Paga'}</b></small><small>Account name: <b>{checkout.account_name||'SupplyKey'}</b></small><strong>{checkout.account_number}</strong><small>Exact amount: <b>{checkout.amount_naira?`₦${checkout.amount_naira}`:money(checkout.amount_kobo)}</b></small><button type="button" className="text-link" onClick={()=>navigator.clipboard?.writeText(checkout.account_number)}>Copy account number</button></div>}{payment.status==='PAYMENT_RECEIVED'&&checkout.amount_received_kobo>0&&<small>Received: <b>{money(checkout.amount_received_kobo)}</b> · Remaining: <b>{money(checkout.remaining_kobo||0)}</b></small>}{isBuyer&&tx.settlement?.excess_payment_refund_amount_kobo>0&&<small>Extra payment received: <b>{money(tx.settlement.excess_payment_refund_amount_kobo)}</b>. Refund status: <b>{titleCase(tx.settlement.excess_payment_refund_status)}</b>.</small>}{checkout.instructions&&<small>{checkout.instructions}</small>}{allowed.includes('refresh_payment')&&['PENDING','PAYMENT_RECEIVED','UNKNOWN'].includes(payment.status)&&<Button variant="text" onClick={()=>invoke(`payments/${payment.payment_id}/refresh`,{})}>Refresh status</Button>}</div></div>}
-function ReviewEvidenceAction({tx,busy,onAction,refresh}){const decision=tx.decisions?.at(-1);const[ids,setIds]=useState([]);if(!decision?.id)return null;return <div className="action-form"><b>Add review evidence</b><EvidenceInline purpose={tx.evidence_requests?.some(r=>r.party===tx.current_party_role&&r.status==='OPEN')?'EVIDENCE_REQUEST_RESPONSE':'OTHER'} txId={tx.id} onUploaded={setIds}/><Button disabled={busy||!ids.length||(decision.evidence_window?.status!=='OPEN'&&!tx.evidence_requests?.some(r=>r.status==='OPEN'))} onClick={async()=>{await onAction(`/decisions/${decision.id}/evidence`,{evidence_ids:ids});await refresh()}}>Submit review evidence</Button></div>}
-function WaiveWindowAction({tx,busy,onAction,refresh}){const decision=tx.decisions?.at(-1);if(!decision?.id)return null;return <Button variant="secondary" disabled={busy||decision.evidence_window?.status!=='OPEN'} onClick={async()=>{await onAction(`/decisions/${decision.id}/waive-window`,{});await refresh()}}>Waive evidence window</Button>}
-function WaiveDisputeWindowAction({tx,busy,onAction,refresh}){return <Button variant="secondary" disabled={busy||tx.dispute?.status!=='EVIDENCE_WINDOW_OPEN'} onClick={async()=>{await onAction(`/disputes/${tx.dispute.id}/waive-window`,{});await refresh()}}>Waive dispute evidence window</Button>}
-function DisputeEvidenceAction({dispute,tx,busy,onAction,refresh}){const[ids,setIds]=useState([]),[statement,setStatement]=useState('');if(!dispute?.id)return null;return <div className="action-form"><b>Add dispute evidence</b><Field label="Statement (optional)"><textarea value={statement} onChange={e=>setStatement(e.target.value)} placeholder="Explain what this evidence supports."/></Field><EvidenceInline purpose="DISPUTE" txId={tx.id} onUploaded={setIds}/><Button disabled={busy||(!ids.length&&!statement.trim())} onClick={async()=>{await onAction(`/disputes/${dispute.id}/evidence`,{kind:statement?'STATEMENT':'STATEMENT',statement,evidence_ids:ids});await refresh()}}>Submit dispute evidence</Button></div>}
-function Timeline({status}){const steps=['AWAITING_BUYER_AGREEMENT','AWAITING_PAYMENT','FUNDED','DISPUTED','SETTLEMENT_PENDING','COMPLETED'];const idx=steps.indexOf(status);return <div className="timeline">{steps.map((s,i)=><div className={`timeline-step ${i<idx?'done':''} ${i===idx?'current':''}`}><div className="timeline-marker">{i<idx?<Check size={13}/>:i+1}</div><span>{titleCase(s)}</span></div>)}</div>}
-function DeliveryPhotoAction({txId,requirement,busy,onAction,refresh}){
- const [uploading,setUploading]=useState(false),[error,setError]=useState(''),[done,setDone]=useState(false);
- const submitFiles=async files=>{
-  if(!files.length)return;
-  setUploading(true);setError('');setDone(false);
-  try{
-   const ids=[];
-   for(const file of files){const uploaded=await api.upload(file,'DELIVERY_PHOTO',txId);const id=uploaded?.id||uploaded?.evidence_id;if(!id)throw new Error('The server did not confirm the photograph upload.');ids.push(id);}
-   await onAction(`/transactions/${txId}/delivery/evidence`,{requirement_id:requirement.id,evidence_ids:ids,note:'Delivery photographs submitted.'});
-   await refresh();setDone(true);
-  }catch(e){setError(e?.data?.error?.message||e.message||'Could not submit delivery photographs.');}
-  finally{setUploading(false);}
- };
- return <div className="delivery-photo-action"><label className="field"><span>Delivery photographs</span><input type="file" multiple accept="image/jpeg,image/png,image/heic" disabled={busy||uploading} onChange={e=>{const files=[...e.target.files];e.target.value='';void submitFiles(files)}}/></label>{uploading&&<small>Uploading, verifying and submitting photographs…</small>}{done&&<small>Photographs submitted successfully.</small>}{error&&<div className="alert error" role="alert">{error}</div>}</div>;
+function Field({ label, children, hint }) {
+  return (
+    <label className="field">
+      <span>{label}</span>
+      {children}
+      {hint && <small>{hint}</small>}
+    </label>
+  );
 }
-function EvidencePicker({files,setFiles}){return <label className="upload-zone"><input type="file" multiple accept="image/jpeg,image/png,image/heic,application/pdf,video/mp4" onChange={e=>setFiles([...e.target.files])}/><div><Upload size={22}/><b>Choose evidence files</b><span>JPEG, PNG, HEIC, PDF or MP4 · configured limits apply</span></div>{files.length>0&&<small>{files.map(f=>f.name).join(', ')}</small>}</label>}
-function DispatchAction({tx,busy,invoke}){
- const [itemId,setItemId]=useState(tx.items[0]?.id||''),[qty,setQty]=useState(1),[courier,setCourier]=useState(''),[rider,setRider]=useState(''),[phone,setPhone]=useState(''),[tracking,setTracking]=useState(''),[ids,setIds]=useState([]),[submitting,setSubmitting]=useState(false),[submitError,setSubmitError]=useState('');
- const item=tx.items.find(i=>i.id===itemId)||tx.items[0];const available=(tx.lots||[]).filter(l=>l.item_id===itemId&&l.item_status==='AWAITING_DISPATCH').reduce((s,l)=>s+l.quantity,0);
- const canSubmit=!!item&&ids.length>0&&ids.every(id=>typeof id==='string'&&id.length>0)&&!!courier.trim()&&!!rider.trim()&&!!phone.trim()&&Number.isInteger(Number(qty))&&Number(qty)>=1&&available>0&&Number(qty)<=available&&!busy&&!submitting;
- const submit=async()=>{if(!canSubmit)return;setSubmitting(true);setSubmitError('');try{await invoke('dispatch',{lines:[{item_id:item.id,quantity:Number(qty)}],courier_name:courier.trim(),rider_name:rider.trim(),rider_phone:phone.trim(),tracking_ref:tracking.trim(),evidence_ids:ids});}catch(e){setSubmitError(e?.data?.error?.message||e.message||'Dispatch could not be submitted. Please try again.');}finally{setSubmitting(false)}};
- return <div className="action-form"><b>Dispatch goods</b><p>Declare the quantity being dispatched and provide dispatch evidence.</p>
-  <Field label="Item"><select value={itemId} onChange={e=>{setItemId(e.target.value);setQty(1)}}>{tx.items.map(i=><option value={i.id}>{i.description}</option>)}</select></Field>
-  <Field label="Quantity"><input type="number" min="1" max={available} value={qty} onChange={e=>setQty(e.target.value)}/></Field>
-  <Field label="Courier"><input value={courier} onChange={e=>setCourier(e.target.value)} placeholder="Courier company"/></Field>
-  <Field label="Rider name"><input value={rider} onChange={e=>setRider(e.target.value)}/></Field>
-  <Field label="Rider phone"><input value={phone} onChange={e=>setPhone(e.target.value)}/></Field>
-  <Field label="Tracking reference"><input value={tracking} onChange={e=>setTracking(e.target.value)}/></Field>
-  <p className="muted">Select a dispatch photo or document. SupplyKey uploads and verifies it before enabling submission.</p><EvidenceInline purpose="DISPATCH_PROOF" txId={tx.id} onUploaded={setIds} autoUploadOnSelect/>
-  {ids.length>0&&<small>{ids.length} verified evidence file(s) attached.</small>}
-  {submitError&&<div className="alert error" role="alert">{submitError}</div>}
-  <Button disabled={!canSubmit} onClick={submit}>{submitting?'Submitting dispatch…':'Submit dispatch'}</Button>
- </div>;
+function App() {
+  const inviteToken = new URLSearchParams(window.location.search).get("invite");
+  const [inviteData, setInviteData] = useState(null),
+    [profileData, setProfileData] = useState(null),
+    [payoutData, setPayoutData] = useState(null);
+  const [inviteError, setInviteError] = useState(""),
+    [bankDirectory, setBankDirectory] = useState([]),
+    [payoutConfirmation, setPayoutConfirmation] = useState(null),
+    [confirmedAccountName, setConfirmedAccountName] = useState(""),
+    [ownershipConfirmed, setOwnershipConfirmed] = useState(false);
+  const [role, setRole] = useState(api.getDemoState().user?.role || "BUYER"),
+    [user, setUser] = useState(api.getDemoState().user),
+    [page, setPage] = useState(
+      inviteToken
+        ? sessionStorage.getItem("sk_access")
+          ? "invitation"
+          : "login"
+        : sessionStorage.getItem("sk_access")
+          ? "overview"
+          : "login",
+    ),
+    [selected, setSelected] = useState(null),
+    [txs, setTxs] = useState([]),
+    [queue, setQueue] = useState([]),
+    [exceptions, setExceptions] = useState([]),
+    [approvals, setApprovals] = useState([]),
+    [notifications, setNotifications] = useState([]),
+    [busy, setBusy] = useState(false),
+    [loading, setLoading] = useState(true),
+    [toast, setToast] = useState(""),
+    [shareUrl, setShareUrl] = useState(""),
+    [search, setSearch] = useState(""),
+    [statusFilter, setStatusFilter] = useState("ALL"),
+    [mobile, setMobile] = useState(false),
+    [modal, setModal] = useState(""),
+    [form, setForm] = useState({}),
+    [files, setFiles] = useState([]),
+    [error, setError] = useState(""),
+    [authMode, setAuthMode] = useState("login"),
+    [sessionReady, setSessionReady] = useState(false),
+    [adminAudit, setAdminAudit] = useState([]),
+    [nextCursor, setNextCursor] = useState(null),
+    [loadingMore, setLoadingMore] = useState(false),
+    [queueCursors, setQueueCursors] = useState({
+      acceptance: null,
+      disputes: null,
+    }),
+    [exceptionCursor, setExceptionCursor] = useState(null),
+    [adminAuditCursor, setAdminAuditCursor] = useState(null);
+  const isModerator = ["MODERATOR", "SENIOR_MODERATOR"].includes(role);
+  const applyAuthenticatedUser = (u) => {
+    if (!u)
+      throw new Error("The authenticated profile was not returned by the API.");
+    setUser(u);
+    const next = ["MODERATOR", "SENIOR_MODERATOR", "ADMIN"].includes(u.role)
+      ? u.role
+      : ["BUYER", "SUPPLIER"].includes(u.role)
+        ? u.role
+        : sessionStorage.getItem("sk_workspace") || "BUYER";
+    setRole(next);
+    if (["BUYER", "SUPPLIER"].includes(next))
+      sessionStorage.setItem("sk_workspace", next);
+    return next;
+  };
+  const refresh = async () => {
+    setLoading(true);
+    try {
+      if (role === "ADMIN") {
+        setTxs([]);
+        setQueue([]);
+        setExceptions([]);
+      } else if (["MODERATOR", "SENIOR_MODERATOR"].includes(role)) {
+        setTxs([]);
+        const queuePage = await api.moderatorQueue();
+        setQueue(queuePage.items);
+        setQueueCursors(queuePage.cursors);
+        if (role === "SENIOR_MODERATOR") {
+          const exceptionPage = await api.financialExceptions();
+          setExceptions(exceptionPage.items);
+          setExceptionCursor(exceptionPage.nextCursor);
+          setApprovals(await api.financialApprovals());
+        } else {
+          setExceptions([]);
+          setExceptionCursor(null);
+          setApprovals([]);
+        }
+      } else {
+        const pageResult = await api.listTransactions(role);
+        setTxs(pageResult.items);
+        setNextCursor(pageResult.nextCursor);
+        setQueue([]);
+        setExceptions([]);
+      }
+    } catch (e) {
+      setError(e.data?.error?.message || e.message);
+    } finally {
+      setLoading(false);
+    }
+  };
+  useEffect(() => {
+    let active = true;
+    if (!sessionStorage.getItem("sk_access")) {
+      setSessionReady(true);
+      return () => {
+        active = false;
+      };
+    }
+    api
+      .me()
+      .then((r) => {
+        if (!active) return;
+        const restoredRole = applyAuthenticatedUser(r.user);
+        if (!inviteToken)
+          setPage(restoredRole === "ADMIN" ? "audit" : "overview");
+      })
+      .catch(() => {
+        if (!active) return;
+        sessionStorage.removeItem("sk_access");
+        setPage("login");
+        setError("Your session could not be restored. Please sign in again.");
+      })
+      .finally(() => {
+        if (active) setSessionReady(true);
+      });
+    return () => {
+      active = false;
+    };
+  }, []);
+  useEffect(() => {
+    if (sessionReady && sessionStorage.getItem("sk_access")) refresh();
+  }, [role, page, sessionReady]);
+  useEffect(() => {
+    if (page !== "detail" || !selected?.id) return;
+    let active = true,
+      inFlight = false;
+    const sync = async () => {
+      if (inFlight) return;
+      inFlight = true;
+      try {
+        const latest = await api.transaction(selected.id);
+        if (active) setSelected(latest);
+      } catch (e) {
+        if (active)
+          setError(
+            e.data?.error?.message ||
+              e.message ||
+              "Could not refresh this transaction.",
+          );
+      } finally {
+        inFlight = false;
+      }
+    };
+    const timer = setInterval(sync, 8000);
+    return () => {
+      active = false;
+      clearInterval(timer);
+    };
+  }, [page, selected?.id]);
+  useEffect(() => {
+    if (page === "audit" && role === "ADMIN") {
+      api
+        .adminAudit()
+        .then((r) => {
+          setAdminAudit(r.items);
+          setAdminAuditCursor(r.nextCursor);
+        })
+        .catch((e) => setError(e.data?.error?.message || e.message));
+    }
+  }, [page, role]);
+  useEffect(() => {
+    if (page === "invitation" && inviteToken) {
+      api
+        .invitation(inviteToken)
+        .then(setInviteData)
+        .catch((e) => setInviteError(e.data?.error?.message || e.message));
+    }
+    if (page === "profile") {
+      api
+        .me()
+        .then((r) => {
+          setProfileData(r.profile);
+          setPayoutData(r.payout_account || null);
+        })
+        .catch((e) => setError(e.message));
+      if (api.mode === "live")
+        api
+          .pagaBanks()
+          .then((r) =>
+            setBankDirectory(Array.isArray(r) ? r : r.data || r.banks || []),
+          )
+          .catch((e) => setError(e.data?.error?.message || e.message));
+    }
+  }, [page, inviteToken]);
+  useEffect(() => {
+    if (toast) {
+      const t = setTimeout(() => setToast(""), 3500);
+      return () => clearTimeout(t);
+    }
+  }, [toast]);
+  const nav =
+    role === "ADMIN"
+      ? [["audit", "Audit trail", ClipboardList]]
+      : role === "BUYER"
+        ? [
+            ["overview", "Overview", Home],
+            ["transactions", "My purchases", ShoppingBag],
+            ["profile", "Profile", Users],
+            ["activity", "Activity", Activity],
+          ]
+        : role === "SUPPLIER"
+          ? [
+              ["overview", "Overview", Home],
+              ["transactions", "Sales & orders", Package],
+              ["create", "New transaction", Plus],
+              ["profile", "Profile", Users],
+              ["activity", "Activity", Activity],
+            ]
+          : [
+              ["overview", "Overview", Home],
+              ["cases", "Case queue", Inbox],
+              ...(role === "SENIOR_MODERATOR"
+                ? [["exceptions", "Financial exceptions", AlertTriangle]]
+                : []),
+              ["audit", "Audit trail", ClipboardList],
+            ];
+  const chooseWorkspace = (r) => {
+    if (api.mode === "mock") setUser(api.switchRole(r));
+    sessionStorage.setItem("sk_workspace", r);
+    setRole(r);
+    setPage("overview");
+    setSelected(null);
+  };
+  const chooseRole = (r) => {
+    const u = api.switchRole(r);
+    sessionStorage.setItem("sk_workspace", r);
+    setRole(r);
+    setUser(u);
+    setPage(r === "BUYER" && inviteToken ? "invitation" : "overview");
+    setSelected(null);
+    setMobile(false);
+  };
+  const act = async (path, body = {}, headers = {}) => {
+    setBusy(true);
+    setError("");
+    try {
+      const res = await api.action(path, body, headers);
+      await refresh();
+      if (res?.invitation_url)
+        setShareUrl(window.location.origin + res.invitation_url);
+      else setShareUrl("");
+      setToast(
+        res?.invitation_url
+          ? "Agreement shared. Send the invitation link to the buyer."
+          : res?.payout?.status === "PENDING_APPROVAL"
+            ? "Decision recorded. The payout instruction awaits a different senior moderator; no payout has been submitted."
+            : res?.instructions?.some((i) => i.status === "PENDING_APPROVAL")
+              ? "Decision recorded. A financial instruction awaits a different senior moderator; no funds have moved."
+              : res?.data?.dispute
+                ? "Goods rejection submitted. The supplier has been notified and payout is blocked while the dispute is unresolved."
+                : "Action submitted successfully.",
+      );
+      if (selected) {
+        try {
+          setSelected(await api.transaction(selected.id));
+        } catch (e) {
+          setError(
+            "The action succeeded, but the transaction detail could not be refreshed: " +
+              (e.data?.error?.message || e.message),
+          );
+        }
+      }
+      if (modal === "case" && form.case?.id) {
+        try {
+          const [latest, settlement] = await Promise.all([
+            form.case.status === "SUBMITTED_FOR_REVIEW"
+              ? api.decisionDetail(form.case.id)
+              : api.caseDetail(form.case.id),
+            api.moderatorSettlement(form.case.transaction_id),
+          ]);
+          setForm((current) => ({
+            ...current,
+            detail: latest,
+            settlement,
+            detailError: "",
+            submitError: "",
+          }));
+        } catch (e) {
+          setForm((current) => ({
+            ...current,
+            detailError:
+              "The action succeeded, but the case detail could not be refreshed: " +
+              (e.data?.error?.message || e.message),
+          }));
+        }
+      }
+      return res;
+    } catch (e) {
+      setError(e.data?.error?.message || e.message);
+      throw e;
+    } finally {
+      setBusy(false);
+    }
+  };
+  const loadMoreTransactions = async () => {
+    if (!nextCursor || loadingMore) return;
+    setLoadingMore(true);
+    try {
+      const pageResult = await api.listTransactions(role, nextCursor);
+      setTxs((current) => [...current, ...pageResult.items]);
+      setNextCursor(pageResult.nextCursor);
+    } catch (e) {
+      setError(e.data?.error?.message || e.message);
+    } finally {
+      setLoadingMore(false);
+    }
+  };
+  const loadMoreQueue = async () => {
+    if ((!queueCursors.acceptance && !queueCursors.disputes) || loadingMore)
+      return;
+    setLoadingMore(true);
+    try {
+      const pageResult = await api.moderatorQueue(queueCursors);
+      setQueue((current) => [...current, ...pageResult.items]);
+      setQueueCursors(pageResult.cursors);
+    } catch (e) {
+      setError(e.data?.error?.message || e.message);
+    } finally {
+      setLoadingMore(false);
+    }
+  };
+  const loadMoreExceptions = async () => {
+    if (!exceptionCursor || loadingMore) return;
+    setLoadingMore(true);
+    try {
+      const pageResult = await api.financialExceptions(exceptionCursor);
+      setExceptions((current) => [...current, ...pageResult.items]);
+      setExceptionCursor(pageResult.nextCursor);
+    } catch (e) {
+      setError(e.data?.error?.message || e.message);
+    } finally {
+      setLoadingMore(false);
+    }
+  };
+  const loadMoreAdminAudit = async () => {
+    if (!adminAuditCursor || loadingMore) return;
+    setLoadingMore(true);
+    try {
+      const pageResult = await api.adminAudit(adminAuditCursor);
+      setAdminAudit((current) => [...current, ...pageResult.items]);
+      setAdminAuditCursor(pageResult.nextCursor);
+    } catch (e) {
+      setError(e.data?.error?.message || e.message);
+    } finally {
+      setLoadingMore(false);
+    }
+  };
+  const openTx = async (t) => {
+    setSelected(await api.transaction(t.id));
+    setPage("detail");
+  };
+  const openCase = async (q) => {
+    setForm({
+      case: q,
+      detailLoading: true,
+      caseAction: q.status === "SUBMITTED_FOR_REVIEW" ? "confirm" : "decision",
+      evidenceIdsConsidered: [],
+    });
+    setModal("case");
+    try {
+      const [detail, settlement] = await Promise.all([
+        q.status === "SUBMITTED_FOR_REVIEW"
+          ? api.decisionDetail(q.id)
+          : api.caseDetail(q.id),
+        api.moderatorSettlement(q.transaction_id),
+      ]);
+      const evidence = await Promise.all(
+        (detail.evidence || []).map((ev) => api.evidence(ev.id)),
+      );
+      setForm({
+        case: q,
+        detail: { ...detail, evidence },
+        settlement,
+        caseAction:
+          q.status === "SUBMITTED_FOR_REVIEW" ? "confirm" : "decision",
+        evidenceIdsConsidered: [],
+      });
+    } catch (e) {
+      setForm({
+        case: q,
+        detailError:
+          e.data?.error?.message ||
+          e.message ||
+          "Could not load the complete moderator case file.",
+        caseAction:
+          q.status === "SUBMITTED_FOR_REVIEW" ? "confirm" : "decision",
+      });
+    }
+  };
+  const filtered = txs.filter(
+    (t) =>
+      `${t.reference} ${t.buyer} ${t.supplier} ${t.status}`
+        .toLowerCase()
+        .includes(search.toLowerCase()) &&
+      (statusFilter === "ALL" || t.status === statusFilter),
+  );
+  const counts = {
+    all: txs.length,
+    active: txs.filter(
+      (t) => !["COMPLETED", "CANCELLED", "EXPIRED"].includes(t.status),
+    ).length,
+    disputes: txs.filter((t) => t.has_open_dispute || t.dispute).length,
+  };
+  const handleLogin = async (e) => {
+    e.preventDefault();
+    setBusy(true);
+    setError("");
+    try {
+      const r = await api.login(form.identifier, form.password);
+      if (r.mfa_required) {
+        sessionStorage.removeItem("sk_access");
+        setForm((current) => ({ ...current, mfaCode: "" }));
+        setAuthMode("mfa");
+        setModal("");
+        return;
+      }
+      if (r.access_token) sessionStorage.setItem("sk_access", r.access_token);
+      const me = await api.me();
+      const nextRole = applyAuthenticatedUser(me.user);
+      setPage(
+        nextRole === "ADMIN"
+          ? "audit"
+          : inviteToken
+            ? "invitation"
+            : "overview",
+      );
+      setSessionReady(true);
+      setToast("Signed in.");
+    } catch (e) {
+      setError(e.data?.error?.message || e.message);
+    } finally {
+      setBusy(false);
+    }
+  };
+  const handleRegister = async (e) => {
+    e.preventDefault();
+    if (!form.email) {
+      setError("Enter your email address.");
+      return;
+    }
+    setBusy(true);
+    setError("");
+    try {
+      const r = await api.register({
+        ...(form.email ? { email: form.email } : {}),
+        ...(form.phone ? { phone: form.phone } : {}),
+        display_name: form.displayName,
+        password: form.password,
+        accepted_terms: !!form.acceptedTerms,
+      });
+      setForm({ ...form, verificationContact: form.email });
+      setToast(
+        r.verification_required
+          ? "Account created. Verify your email to continue."
+          : "Registration submitted.",
+      );
+      setAuthMode("verify");
+    } catch (e) {
+      setError(e.data?.error?.message || e.message);
+    } finally {
+      setBusy(false);
+    }
+  };
+  const handleVerify = async (e) => {
+    e.preventDefault();
+    setBusy(true);
+    setError("");
+    try {
+      const r = await api.verifyOtp(form.verificationContact, form.otp);
+      if (r.access_token) sessionStorage.setItem("sk_access", r.access_token);
+      const me = await api.me();
+      applyAuthenticatedUser(me.user);
+      setSessionReady(true);
+      setPage("overview");
+      setToast("Contact verified.");
+    } catch (e) {
+      setError(e.data?.error?.message || e.message);
+    } finally {
+      setBusy(false);
+    }
+  };
+  const saveProfile = async (e) => {
+    e.preventDefault();
+    setBusy(true);
+    try {
+      const r = await api.updateProfile(profileData);
+      setProfileData(r.profile);
+      setToast("Profile updated.");
+    } catch (e) {
+      setError(e.data?.error?.message || e.message);
+    } finally {
+      setBusy(false);
+    }
+  };
+  const savePayout = async (e) => {
+    e.preventDefault();
+    setBusy(true);
+    setError("");
+    try {
+      const r = await api.setPayoutAccount({
+        bank_uuid: profileData.bank_uuid,
+        account_number: profileData.account_number,
+      });
+      setPayoutConfirmation({
+        token: r.confirmation_token,
+        accountName: r.account_name,
+        bankName: r.bank_name,
+        masked: r.masked_account_number,
+        effectiveAt: r.effective_at,
+        cooldownHours: r.cooldown_hours,
+      });
+      setConfirmedAccountName("");
+      setOwnershipConfirmed(false);
+      setToast(
+        "Paga verified the bank account. Confirm the returned account-holder name to activate it.",
+      );
+    } catch (e) {
+      setError(e.data?.error?.message || e.message);
+    } finally {
+      setBusy(false);
+    }
+  };
+  const confirmPayout = async (e) => {
+    e.preventDefault();
+    setBusy(true);
+    setError("");
+    try {
+      const r = await api.confirmPayoutAccount({
+        confirmation_token: payoutConfirmation.token,
+        confirmed_account_name: confirmedAccountName,
+        confirm_account_ownership: ownershipConfirmed,
+      });
+      setPayoutData(r.payout_account || null);
+      setPayoutConfirmation(null);
+      setOwnershipConfirmed(false);
+      setProfileData({ ...profileData, account_number: "" });
+      setToast(
+        r.change_pending
+          ? "Bank account confirmed. The 24-hour security cooldown applies before new payouts."
+          : "Bank account confirmed and activated.",
+      );
+    } catch (e) {
+      setError(e.data?.error?.message || e.message);
+    } finally {
+      setBusy(false);
+    }
+  };
+  const raiseDispute = async (data) => {
+    setBusy(true);
+    setError("");
+    try {
+      await api.action(`/transactions/${data.txId}/disputes`, {
+        reason_code: data.reasonCode,
+        lines: [{ item_id: data.itemId, quantity: Number(data.quantity || 1) }],
+        statement: data.reason,
+      });
+      if (selected) setSelected(await api.transaction(selected.id));
+      await refresh();
+      setToast("Dispute opened. Funds remain under backend-controlled review.");
+      setModal("");
+    } catch (e) {
+      setError(e.data?.error?.message || e.message);
+    } finally {
+      setBusy(false);
+    }
+  };
+  const handleMfa = async (e) => {
+    e.preventDefault();
+    const code = String(form.mfaCode || "").trim();
+    if (!/^\d{6}$/.test(code)) {
+      setError("Enter the six-digit code from your authenticator app.");
+      return;
+    }
+    setBusy(true);
+    setError("");
+    try {
+      const r = await api.action("/auth/mfa/verify", { code });
+      if (!r.access_token)
+        throw new Error(
+          "MFA verification did not return an authenticated session.",
+        );
+      sessionStorage.setItem("sk_access", r.access_token);
+      const me = await api.me();
+      const nextRole = applyAuthenticatedUser(me.user);
+      setSessionReady(true);
+      setPage(nextRole === "ADMIN" ? "audit" : "overview");
+      setAuthMode("login");
+      setForm({});
+      setToast("Staff identity verified.");
+    } catch (e) {
+      const code = e.data?.error?.code;
+      setError(
+        code === "MFA_CHALLENGE_EXPIRED"
+          ? "Your MFA challenge has expired. Sign in again to request a new code."
+          : code === "MFA_INVALID"
+            ? "That authenticator code is invalid or expired. Check your authenticator app and try again."
+            : e.data?.error?.message || e.message,
+      );
+    } finally {
+      setBusy(false);
+    }
+  };
+  const uploadEvidence = async (purpose) => {
+    if (!files.length) {
+      setError("Choose at least one evidence file.");
+      return [];
+    }
+    setBusy(true);
+    try {
+      const done = [];
+      for (const f of files) {
+        const r = await api.upload(f, purpose, selected?.id || form.txId || "");
+        done.push(r.id);
+      }
+      setFiles([]);
+      setToast(
+        `${done.length} evidence file(s) verified by the ${api.mode === "mock" ? "demo adapter" : "server"}.`,
+      );
+      return done;
+    } catch (e) {
+      setError(e.message);
+      return [];
+    } finally {
+      setBusy(false);
+    }
+  };
+  const createTx = async (e) => {
+    e.preventDefault();
+    if (
+      !String(form.buyerEmail || "").trim() &&
+      !String(form.buyerPhone || "").trim()
+    ) {
+      setError("Enter the buyer email address or phone number.");
+      return;
+    }
+    if (Number(form.deliveryFee || 0) !== 0) {
+      setError(
+        "Delivery-fee payer and refund allocation are unresolved (OD-05). The MVP form keeps delivery fees at zero until the policy is approved.",
+      );
+      return;
+    }
+    setBusy(true);
+    try {
+      const buildItem = (i) => ({
+        description: i.description,
+        specification: i.specification,
+        condition: i.condition || "As described",
+        quantity: Number(i.quantity),
+        unit_price_kobo: Math.round(Number(i.price) * 100),
+        conditions: [
+          {
+            code: "SPEC_MATCH",
+            kind: "REJECTION",
+            text: i.conditionText || "Item must match the agreed specification",
+          },
+        ],
+      });
+      const items = [
+        buildItem(form),
+        ...(form.additionalItems || []).map(buildItem),
+      ];
+      const t = await api.createTransaction({
+        buyer_contact: {
+          email: form.buyerEmail || undefined,
+          phone: form.buyerPhone || undefined,
+        },
+        delivery: {
+          destination_state: form.state,
+          city: form.city,
+          expected_within_days: Number(form.days || 5),
+          fee_payer: "BUYER",
+          delivery_fee_kobo: 0,
+        },
+        items,
+        general_terms: form.terms || "",
+      });
+      setSelected(t);
+      setPage("detail");
+      setToast("Draft created. Review the agreement before sharing.");
+      await refresh();
+    } catch (e) {
+      setError(e.data?.error?.message || e.message);
+    } finally {
+      setBusy(false);
+    }
+  };
+  const sidebar = (
+    <>
+      <div className="brand">
+        <div className="brand-mark">
+          <ShieldCheck size={21} />
+        </div>
+        <div>
+          <b>supplykey</b>
+          <small>TRADE WITH CONFIDENCE</small>
+        </div>
+      </div>
+      <div className="workspace-label">WORKSPACE</div>
+      <nav>
+        {nav.map(([id, label, Icon]) => (
+          <button
+            key={id}
+            className={
+              page === id || (page === "detail" && id === "transactions")
+                ? "nav-item active"
+                : "nav-item"
+            }
+            onClick={() => {
+              setPage(id);
+              setSelected(null);
+              setMobile(false);
+            }}
+          >
+            <Icon size={18} />
+            <span>{label}</span>
+            {id === "cases" && queue.length > 0 && <em>{queue.length}</em>}
+          </button>
+        ))}
+      </nav>
+      <div className="side-bottom">
+        <div className="help-card">
+          <div className="help-icon">
+            <HelpCircle size={18} />
+          </div>
+          <b>Need a hand?</b>
+          <p>Explore how protected transactions work.</p>
+          <button onClick={() => setModal("help")}>
+            Visit help centre <ArrowRight size={14} />
+          </button>
+        </div>
+        <div className="profile">
+          <div className="avatar">
+            {(user?.display_name || "U")
+              .split(" ")
+              .map((x) => x[0])
+              .join("")
+              .slice(0, 2)}
+          </div>
+          <div className="profile-meta">
+            <b>{user?.display_name || "Guest"}</b>
+            <small>{titleCase(role)}</small>
+          </div>
+          <button className="icon-btn" onClick={() => setModal("account")}>
+            <MoreHorizontal size={18} />
+          </button>
+        </div>
+      </div>
+    </>
+  );
+  if (page === "login")
+    return (
+      <div className="login-screen">
+        <div className="login-art">
+          <div className="brand light">
+            <div className="brand-mark">
+              <ShieldCheck size={21} />
+            </div>
+            <div>
+              <b>supplykey</b>
+              <small>TRADE WITH CONFIDENCE</small>
+            </div>
+          </div>
+          <div className="login-message">
+            <span className="eyebrow">A SAFER WAY TO TRADE</span>
+            <h1>
+              Confidence in every
+              <br />
+              transaction.
+            </h1>
+            <p>
+              Clear agreements. Verified funding status. Evidence at every step.
+            </p>
+            <div className="login-points">
+              <span>
+                <CheckCircle2 /> Funds status you can trust
+              </span>
+              <span>
+                <CheckCircle2 /> A record of every agreement
+              </span>
+              <span>
+                <CheckCircle2 /> Fair, moderated dispute review
+              </span>
+            </div>
+          </div>
+          <div className="login-foot">
+            Built for buyers and suppliers across Nigeria.
+          </div>
+        </div>
+        <div className="login-form-wrap">
+          <div className="login-form">
+            <span className="eyebrow">
+              {authMode === "login"
+                ? "WELCOME BACK"
+                : authMode === "mfa"
+                  ? "ADDITIONAL SECURITY CHECK"
+                  : "GET STARTED"}
+            </span>
+            <h2>
+              {authMode === "login"
+                ? "Sign in to SupplyKey"
+                : authMode === "register"
+                  ? "Create your account"
+                  : authMode === "mfa"
+                    ? "Verify your identity"
+                    : "Verify your email"}
+            </h2>
+            <p>
+              {authMode === "login"
+                ? "Enter your account details to continue."
+                : authMode === "register"
+                  ? "Set up your SupplyKey account."
+                  : authMode === "mfa"
+                    ? "Enter the six-digit code from your authenticator app to finish signing in."
+                    : "Enter the six-digit code sent to your email address."}
+            </p>
+            {error && (
+              <div className="alert error">
+                <AlertTriangle size={16} />
+                {error}
+              </div>
+            )}
+            {authMode === "login" ? (
+              <>
+                <form onSubmit={handleLogin}>
+                  <Field label="Email or phone">
+                    <input
+                      required
+                      value={form.identifier || ""}
+                      onChange={(e) =>
+                        setForm({ ...form, identifier: e.target.value })
+                      }
+                      placeholder="you@example.com"
+                    />
+                  </Field>
+                  <Field label="Password">
+                    <input
+                      type="password"
+                      required
+                      value={form.password || ""}
+                      onChange={(e) =>
+                        setForm({ ...form, password: e.target.value })
+                      }
+                      placeholder="Enter your password"
+                    />
+                  </Field>
+                  <Button type="submit" disabled={busy}>
+                    Sign in <ArrowRight size={16} />
+                  </Button>
+                </form>
+                <button
+                  type="button"
+                  className="auth-switch"
+                  onClick={() => {
+                    setAuthMode("register");
+                    setError("");
+                  }}
+                >
+                  Create a SupplyKey account
+                </button>
+              </>
+            ) : authMode === "mfa" ? (
+              <>
+                <form onSubmit={handleMfa}>
+                  <Field label="6-digit authenticator code">
+                    <input
+                      autoComplete="one-time-code"
+                      inputMode="numeric"
+                      pattern="[0-9]{6}"
+                      maxLength={6}
+                      required
+                      value={form.mfaCode || ""}
+                      onChange={(e) =>
+                        setForm({
+                          ...form,
+                          mfaCode: e.target.value
+                            .replace(/\D/g, "")
+                            .slice(0, 6),
+                        })
+                      }
+                      placeholder="000000"
+                    />
+                  </Field>
+                  <Button
+                    type="submit"
+                    disabled={busy || !/^\d{6}$/.test(form.mfaCode || "")}
+                  >
+                    Verify
+                  </Button>
+                </form>
+                <button
+                  type="button"
+                  className="auth-switch"
+                  disabled={busy}
+                  onClick={() => {
+                    setAuthMode("login");
+                    setForm((current) => ({ ...current, mfaCode: "" }));
+                    setError("");
+                  }}
+                >
+                  Back to sign in
+                </button>
+              </>
+            ) : authMode === "register" ? (
+              <form onSubmit={handleRegister}>
+                <Field label="Full name">
+                  <input
+                    required
+                    value={form.displayName || ""}
+                    onChange={(e) =>
+                      setForm({ ...form, displayName: e.target.value })
+                    }
+                  />
+                </Field>
+                <Field label="Email">
+                  <input
+                    type="email"
+                    required
+                    value={form.email || ""}
+                    onChange={(e) =>
+                      setForm({ ...form, email: e.target.value })
+                    }
+                  />
+                </Field>
+                <Field label="Phone">
+                  <input
+                    value={form.phone || ""}
+                    onChange={(e) =>
+                      setForm({ ...form, phone: e.target.value })
+                    }
+                  />
+                </Field>
+                <Field label="Password (minimum 10 characters)">
+                  <input
+                    type="password"
+                    minLength="10"
+                    required
+                    value={form.password || ""}
+                    onChange={(e) =>
+                      setForm({ ...form, password: e.target.value })
+                    }
+                  />
+                </Field>
+                <label className="terms-check">
+                  <input
+                    type="checkbox"
+                    required
+                    checked={!!form.acceptedTerms}
+                    onChange={(e) =>
+                      setForm({ ...form, acceptedTerms: e.target.checked })
+                    }
+                  />{" "}
+                  I accept the terms of service.
+                </label>
+                <Button type="submit" disabled={busy}>
+                  Create account <ArrowRight size={16} />
+                </Button>
+                <button
+                  type="button"
+                  className="auth-switch"
+                  onClick={() => setAuthMode("login")}
+                >
+                  Back to sign in
+                </button>
+              </form>
+            ) : (
+              <form onSubmit={handleVerify}>
+                <Field label="Email address">
+                  <input
+                    required
+                    value={form.verificationContact || ""}
+                    onChange={(e) =>
+                      setForm({ ...form, verificationContact: e.target.value })
+                    }
+                  />
+                </Field>
+                <Field label="One-time code">
+                  <input
+                    required
+                    maxLength="6"
+                    value={form.otp || ""}
+                    onChange={(e) => setForm({ ...form, otp: e.target.value })}
+                  />
+                </Field>
+                <Button type="submit" disabled={busy}>
+                  Verify account <ArrowRight size={16} />
+                </Button>
+                <button
+                  type="button"
+                  className="auth-switch"
+                  onClick={async () => {
+                    try {
+                      await api.resendOtp(form.verificationContact);
+                      setToast("A new verification code was requested.");
+                    } catch (e) {
+                      setError(e.message);
+                    }
+                  }}
+                >
+                  Resend code
+                </button>
+                <button
+                  type="button"
+                  className="auth-switch"
+                  onClick={() => setAuthMode("login")}
+                >
+                  Back to sign in
+                </button>
+              </form>
+            )}
+            {api.mode === "mock" && (
+              <>
+                <div className="demo-divider">
+                  <span>DEMO ACCESS</span>
+                </div>
+                <p className="demo-note">
+                  Choose a role to explore the application with sample records.
+                </p>
+                <div className="role-pills">
+                  {["BUYER", "SUPPLIER", "MODERATOR", "SENIOR_MODERATOR"].map(
+                    (r) => (
+                      <button type="button" onClick={() => chooseRole(r)}>
+                        {titleCase(r)}
+                      </button>
+                    ),
+                  )}
+                </div>
+                <small className="muted">
+                  Authentication is simulated locally. Demo registration uses
+                  code 123456.
+                </small>
+              </>
+            )}
+          </div>
+        </div>
+      </div>
+    );
+  return (
+    <div className="app-shell">
+      <aside className={`sidebar ${mobile ? "show" : ""}`}>{sidebar}</aside>
+      {mobile && <div className="scrim" onClick={() => setMobile(false)} />}
+      <main className="main">
+        <header className="topbar">
+          <button
+            className="icon-btn mobile-menu"
+            onClick={() => setMobile(true)}
+          >
+            <Menu />
+          </button>
+          <div className="crumb">
+            Workspace <ChevronRight size={14} />{" "}
+            <b>
+              {page === "detail"
+                ? "Transaction details"
+                : nav.find((n) => n[0] === page)?.[1] || titleCase(page)}
+            </b>
+          </div>
+          <div className="top-actions">
+            <div className="env-pill">
+              <span />{" "}
+              {api.mode === "mock" ? "DEMO ENVIRONMENT" : "CONNECTED API"}
+            </div>
+            <button
+              className="icon-btn"
+              onClick={async () => {
+                try {
+                  setNotifications(await api.notifications());
+                } catch (e) {
+                  setError(e.message);
+                }
+                setModal("notifications");
+              }}
+            >
+              <Bell size={18} />
+              <i className="notification-dot" />
+            </button>
+            <button className="top-avatar" onClick={() => setModal("account")}>
+              {(user?.display_name || "U")
+                .split(" ")
+                .map((x) => x[0])
+                .join("")
+                .slice(0, 2)}
+            </button>
+          </div>
+        </header>
+        <div className="content">
+          {api.mode === "mock" && (
+            <div className="demo-banner">
+              <Shield size={16} />
+              <span>
+                <b>Demo mode</b> — sample data and local workflow actions.
+                Payment attempts remain pending; no real funds are moved and no
+                settlement is simulated.
+              </span>
+              <button
+                onClick={() => {
+                  api.reset();
+                  api.switchRole(role);
+                  setSelected(null);
+                  refresh();
+                  setToast("Demo data reset.");
+                }}
+              >
+                Reset demo data
+              </button>
+            </div>
+          )}
+          {error && (
+            <div className="alert error global">
+              <AlertTriangle size={17} />
+              <span>{error}</span>
+              <button onClick={() => setError("")}>
+                <X size={15} />
+              </button>
+            </div>
+          )}
+          {page === "invitation" && (
+            <>
+              <div className="page-heading">
+                <div>
+                  <span className="eyebrow">SUPPLIER INVITATION</span>
+                  <h1>Review transaction invitation</h1>
+                  <p>
+                    Confirm the transaction details before agreeing to the
+                    current agreement version.
+                  </p>
+                </div>
+              </div>
+              {inviteError ? (
+                <div className="alert error">{inviteError}</div>
+              ) : !inviteData ? (
+                <section className="panel">
+                  <Empty
+                    title="Loading invitation"
+                    text="Retrieving the transaction invitation details."
+                  />
+                </section>
+              ) : (
+                <section className="panel invitation-card">
+                  <div className="invitation-top">
+                    <div className="stat-icon">
+                      <FileText />
+                    </div>
+                    <div>
+                      <b>{inviteData.reference}</b>
+                      <small>Invitation from {inviteData.supplier}</small>
+                    </div>
+                    <Badge>{inviteData.status}</Badge>
+                  </div>
+                  <div className="summary-line">
+                    <span>Delivery destination</span>
+                    <b>{inviteData.destination}</b>
+                  </div>
+                  <div className="summary-line">
+                    <span>Total payable</span>
+                    <b>{money(inviteData.total_payable_kobo)}</b>
+                  </div>
+                  {inviteData.items?.map((i) => (
+                    <div className="item-row">
+                      <div className="item-thumb">
+                        <Package />
+                      </div>
+                      <div className="item-info">
+                        <b>{i.description}</b>
+                        <p>{i.specification}</p>
+                        <small>
+                          Quantity {i.quantity} · {money(i.unit_price_kobo)}{" "}
+                          each
+                        </small>
+                      </div>
+                    </div>
+                  ))}
+                  <div className="notice">
+                    <ShieldCheck size={16} /> Accepting the invitation links
+                    your account as the buyer. It does not confirm agreement or
+                    initiate payment.
+                  </div>
+                  <Button
+                    disabled={busy || role !== "BUYER"}
+                    onClick={async () => {
+                      try {
+                        const t = await api.acceptInvitation(inviteToken);
+                        setSelected(t);
+                        setPage("detail");
+                        setToast(
+                          "Invitation accepted. Review and confirm the agreement separately.",
+                        );
+                        await refresh();
+                      } catch (e) {
+                        setInviteError(e.data?.error?.message || e.message);
+                      }
+                    }}
+                  >
+                    Accept invitation <ArrowRight size={16} />
+                  </Button>
+                </section>
+              )}
+            </>
+          )}
+          {page === "overview" && (
+            <>
+              <div className="page-heading">
+                <div>
+                  <span className="eyebrow">
+                    {isModerator ? "OPERATIONS CENTRE" : "YOUR WORKSPACE"}
+                  </span>
+                  <h1>
+                    {role === "BUYER"
+                      ? "Good to see you, Chinedu"
+                      : role === "SUPPLIER"
+                        ? "Welcome back, Ibrahim"
+                        : "Moderation overview"}
+                  </h1>
+                  <p>
+                    {isModerator
+                      ? "Review cases, protect the process and keep decisions accountable."
+                      : "Here’s what’s happening with your protected transactions."}
+                  </p>
+                </div>
+                {role === "SUPPLIER" && (
+                  <Button icon={Plus} onClick={() => setPage("create")}>
+                    Create transaction
+                  </Button>
+                )}
+              </div>
+              <div className="stats-grid">
+                {(isModerator
+                  ? [
+                      [
+                        "Open cases",
+                        queue.length,
+                        Inbox,
+                        "Cases requiring attention",
+                      ],
+                      [
+                        "Acceptance reviews",
+                        queue.filter((q) => q.status === "SUBMITTED_FOR_REVIEW")
+                          .length,
+                        FileCheck,
+                        "Awaiting moderator review",
+                      ],
+                      [
+                        "Disputes",
+                        queue.filter((q) => q.status !== "SUBMITTED_FOR_REVIEW")
+                          .length,
+                        Shield,
+                        "Active case files",
+                      ],
+                    ]
+                  : [
+                      [
+                        "All transactions",
+                        counts.all,
+                        BriefcaseBusiness,
+                        "Across your workspace",
+                      ],
+                      ["In progress", counts.active, Clock, "Not yet settled"],
+                      ["Disputes", counts.disputes, Shield, "Need attention"],
+                    ]
+                ).map(([label, val, Icon, sub]) => (
+                  <div className="stat-card">
+                    <div className="stat-top">
+                      <span>{label}</span>
+                      <div className="stat-icon">
+                        <Icon size={18} />
+                      </div>
+                    </div>
+                    <strong>{val}</strong>
+                    <small>{sub}</small>
+                  </div>
+                ))}
+              </div>
+              <div className="section-grid">
+                <section className="panel wide">
+                  <div className="panel-head">
+                    <div>
+                      <h3>
+                        {isModerator ? "Priority queue" : "Recent transactions"}
+                      </h3>
+                      <p>
+                        {isModerator
+                          ? "Cases that need moderator attention"
+                          : "Your latest activity across SupplyKey"}
+                      </p>
+                    </div>
+                    <button
+                      className="text-link"
+                      onClick={() =>
+                        setPage(isModerator ? "cases" : "transactions")
+                      }
+                    >
+                      View all <ArrowRight size={15} />
+                    </button>
+                  </div>
+                  {isModerator ? (
+                    <QueueTable
+                      items={queue.slice(0, 4)}
+                      onOpen={openCase}
+                      loading={loading}
+                    />
+                  ) : (
+                    <TransactionTable
+                      items={txs.slice(0, 4)}
+                      onOpen={openTx}
+                      loading={loading}
+                    />
+                  )}
+                </section>
+                <section className="panel activity-panel">
+                  <div className="panel-head">
+                    <div>
+                      <h3>How SupplyKey protects you</h3>
+                      <p>Every step has a clear record.</p>
+                    </div>
+                  </div>
+                  <div className="protection-list">
+                    <div>
+                      <div className="step-icon">
+                        <FileText />
+                      </div>
+                      <div>
+                        <b>Agree on the details</b>
+                        <p>
+                          Both parties confirm the same item specifications and
+                          terms.
+                        </p>
+                      </div>
+                    </div>
+                    <div>
+                      <div className="step-icon">
+                        <Wallet />
+                      </div>
+                      <div>
+                        <b>Verify funding</b>
+                        <p>
+                          Dispatch begins only after the backend confirms funds
+                          are secured.
+                        </p>
+                      </div>
+                    </div>
+                    <div>
+                      <div className="step-icon">
+                        <CameraIcon />
+                      </div>
+                      <div>
+                        <b>Keep evidence</b>
+                        <p>
+                          Photographs support the record; they do not prove
+                          receipt by themselves.
+                        </p>
+                      </div>
+                    </div>
+                    <div>
+                      <div className="step-icon">
+                        <ShieldCheck />
+                      </div>
+                      <div>
+                        <b>Independent review</b>
+                        <p>
+                          Acceptance and disputes follow a documented review
+                          process.
+                        </p>
+                      </div>
+                    </div>
+                  </div>
+                </section>
+              </div>
+              <section className="trust-strip">
+                <div className="trust-symbol">
+                  <ShieldCheck />
+                </div>
+                <div>
+                  <b>Your transaction record stays organised.</b>
+                  <p>
+                    Agreements, evidence, deadlines and decisions are tied to
+                    each transaction.
+                  </p>
+                </div>
+                <span>SUPPLYKEY PROTECTION</span>
+              </section>
+              {role === "SENIOR_MODERATOR" && (
+                <ApprovalPanel
+                  items={
+                    api.mode === "mock"
+                      ? api.getDemoState().approvals
+                      : approvals
+                  }
+                  onAction={act}
+                />
+              )}
+            </>
+          )}
+          {page === "profile" && (
+            <>
+              <div className="page-heading">
+                <div>
+                  <span className="eyebrow">ACCOUNT SETTINGS</span>
+                  <h1>Your profile</h1>
+                  <p>Keep your contact and business details current.</p>
+                </div>
+              </div>
+              <div className="profile-layout">
+                <form className="panel form-panel" onSubmit={saveProfile}>
+                  <h3>Profile information</h3>
+                  <p className="muted">
+                    Your profile details are stored by the backend.
+                  </p>
+                  <Field label="Display name">
+                    <input
+                      required
+                      value={profileData?.display_name || ""}
+                      onChange={(e) =>
+                        setProfileData({
+                          ...profileData,
+                          display_name: e.target.value,
+                        })
+                      }
+                    />
+                  </Field>
+                  <Field label="Business name (optional)">
+                    <input
+                      value={profileData?.business_name || ""}
+                      onChange={(e) =>
+                        setProfileData({
+                          ...profileData,
+                          business_name: e.target.value,
+                        })
+                      }
+                    />
+                  </Field>
+                  <Field label="State">
+                    <select
+                      value={profileData?.state || ""}
+                      onChange={(e) =>
+                        setProfileData({
+                          ...profileData,
+                          state: e.target.value,
+                        })
+                      }
+                    >
+                      <option value="">Select state</option>
+                      {NG_STATES.map((s) => (
+                        <option>{s}</option>
+                      ))}
+                    </select>
+                  </Field>
+                  <Field label="Address">
+                    <textarea
+                      value={profileData?.address || ""}
+                      onChange={(e) =>
+                        setProfileData({
+                          ...profileData,
+                          address: e.target.value,
+                        })
+                      }
+                    />
+                  </Field>
+                  <Button type="submit" disabled={busy || !profileData}>
+                    Save profile
+                  </Button>
+                </form>
+                {["SUPPLIER", "BUYER"].includes(role) ? (
+                  <div className="panel form-panel">
+                    <h3>Bank account for payouts and refunds</h3>
+                    <p className="muted">
+                      This verified bank destination is used for supplier
+                      payouts and buyer refunds. Account details are encrypted
+                      by the backend; only masked details are returned.
+                    </p>
+                    <div className="payout-status">
+                      <span>Current verification</span>
+                      <Badge>
+                        {payoutData?.change_pending
+                          ? "CHANGE_PENDING"
+                          : payoutData?.verified
+                            ? "VERIFIED"
+                            : "NOT_VERIFIED"}
+                      </Badge>
+                    </div>{" "}
+                    {payoutData?.reverification_required && (
+                      <div className="notice">
+                        <Shield size={16} /> This saved account predates
+                        SupplyKey's beneficiary confirmation process. Verify it
+                        again and confirm the bank-returned account name before
+                        it can receive a new payout or refund.
+                      </div>
+                    )}
+                    {payoutData?.masked_account_number && (
+                      <div className="summary-line">
+                        <span>Account</span>
+                        <b>
+                          {payoutData.account_name} ·{" "}
+                          {payoutData.masked_account_number}
+                        </b>
+                      </div>
+                    )}
+                    {payoutData?.effective_at && (
+                      <div className="summary-line">
+                        <span>Effective from</span>
+                        <b>{dateTime(payoutData.effective_at)}</b>
+                      </div>
+                    )}
+                    <form onSubmit={savePayout}>
+                      <Field label="Bank">
+                        <select
+                          required
+                          value={profileData?.bank_uuid || ""}
+                          onChange={(e) =>
+                            setProfileData({
+                              ...profileData,
+                              bank_uuid: e.target.value,
+                            })
+                          }
+                        >
+                          <option value="">Select a bank from Paga</option>
+                          {bankDirectory.map((b) => (
+                            <option key={b.uuid} value={b.uuid}>
+                              {b.name}
+                            </option>
+                          ))}
+                        </select>
+                      </Field>
+                      <Field label="Account number">
+                        <input
+                          required
+                          inputMode="numeric"
+                          maxLength="10"
+                          value={profileData?.account_number || ""}
+                          onChange={(e) =>
+                            setProfileData({
+                              ...profileData,
+                              account_number: e.target.value.replace(/\D/g, ""),
+                            })
+                          }
+                          placeholder="10-digit account number"
+                        />
+                      </Field>
+                      <div className="notice">
+                        <Shield size={16} /> The backend validates the
+                        destination with Paga when Paga mode is enabled. Do not
+                        enter real bank details while using the local simulator.
+                      </div>
+                      <Button
+                        type="submit"
+                        disabled={
+                          busy || api.mode === "mock" || !bankDirectory.length
+                        }
+                      >
+                        Verify bank account
+                      </Button>
+                      {api.mode === "mock" && (
+                        <small className="muted">
+                          Payout account submission is disabled in demo mode.
+                          Use a live backend and verified account flow.
+                        </small>
+                      )}
+                      {api.mode === "live" && !bankDirectory.length && (
+                        <small className="muted">
+                          Loading Paga's supported bank directory. Manual bank
+                          codes are not accepted.
+                        </small>
+                      )}
+                    </form>
+                    {payoutConfirmation && (
+                      <form
+                        className="confirm-beneficiary"
+                        onSubmit={confirmPayout}
+                      >
+                        <div className="notice">
+                          <Shield size={16} /> Paga returned{" "}
+                          <b>{payoutConfirmation.accountName}</b> for{" "}
+                          {payoutConfirmation.bankName} ·{" "}
+                          {payoutConfirmation.masked}. Confirm the exact name to
+                          bind this beneficiary.
+                          {payoutConfirmation.cooldownHours
+                            ? ` A ${payoutConfirmation.cooldownHours}-hour security cooldown applies.`
+                            : ""}
+                        </div>
+                        <Field label="Confirm account holder name">
+                          <input
+                            required
+                            autoComplete="off"
+                            value={confirmedAccountName}
+                            onChange={(e) =>
+                              setConfirmedAccountName(e.target.value)
+                            }
+                            placeholder="Enter the name returned by Paga"
+                          />
+                        </Field>
+                        <label className="checkbox-field">
+                          <input
+                            type="checkbox"
+                            checked={ownershipConfirmed}
+                            onChange={(e) =>
+                              setOwnershipConfirmed(e.target.checked)
+                            }
+                          />
+                          <span>
+                            I confirm that I own or am authorised to receive
+                            funds into this bank account.
+                          </span>
+                        </label>
+                        <Button
+                          type="submit"
+                          disabled={busy || !ownershipConfirmed}
+                        >
+                          Confirm bank account
+                        </Button>
+                      </form>
+                    )}
+                  </div>
+                ) : (
+                  <div className="panel form-panel">
+                    <h3>Bank account settings</h3>
+                    <p className="muted">
+                      Bank destinations are available to buyers and suppliers.
+                    </p>
+                  </div>
+                )}
+              </div>
+            </>
+          )}
+          {page === "transactions" && (
+            <>
+              <div className="page-heading">
+                <div>
+                  <span className="eyebrow">TRANSACTION MANAGEMENT</span>
+                  <h1>
+                    {role === "BUYER" ? "My purchases" : "Sales & orders"}
+                  </h1>
+                  <p>
+                    Track agreements, funding, delivery and next steps in one
+                    place.
+                  </p>
+                </div>
+                {role === "SUPPLIER" && (
+                  <Button icon={Plus} onClick={() => setPage("create")}>
+                    New transaction
+                  </Button>
+                )}
+              </div>
+              <div className="toolbar">
+                <div className="search-box">
+                  <Search size={17} />
+                  <input
+                    placeholder="Search by reference, name or status"
+                    value={search}
+                    onChange={(e) => setSearch(e.target.value)}
+                  />
+                </div>
+                <label className="filter-btn">
+                  <Filter size={16} />
+                  <select
+                    value={statusFilter}
+                    onChange={(e) => setStatusFilter(e.target.value)}
+                  >
+                    <option value="ALL">All statuses</option>
+                    {TX_STATES.map((s) => (
+                      <option value={s}>{titleCase(s)}</option>
+                    ))}
+                  </select>
+                  <ChevronDown size={14} />
+                </label>
+              </div>
+              <section className="panel table-panel">
+                <TransactionTable
+                  items={filtered}
+                  onOpen={openTx}
+                  loading={loading}
+                />
+                {nextCursor && (
+                  <div className="pagination-actions">
+                    <Button
+                      variant="secondary"
+                      disabled={loadingMore}
+                      onClick={loadMoreTransactions}
+                    >
+                      {loadingMore ? "Loading…" : "Load more transactions"}
+                    </Button>
+                  </div>
+                )}
+              </section>
+            </>
+          )}
+          {page === "create" && (
+            <>
+              <div className="page-heading">
+                <div>
+                  <button
+                    className="back-link"
+                    onClick={() => setPage("transactions")}
+                  >
+                    <ArrowLeft size={15} /> Back to transactions
+                  </button>
+                  <span className="eyebrow">NEW SALE</span>
+                  <h1>Create a transaction</h1>
+                  <p>
+                    Set out the item, agreed condition and delivery destination.
+                  </p>
+                </div>
+              </div>
+              <form className="form-layout" onSubmit={createTx}>
+                <section className="panel form-panel">
+                  <div className="form-section-title">
+                    <span>01</span>
+                    <div>
+                      <h3>Buyer details</h3>
+                      <p>Who will receive the transaction invitation?</p>
+                    </div>
+                  </div>
+                  <div className="form-grid">
+                    <Field label="Buyer name">
+                      <input
+                        required
+                        value={form.buyerName || ""}
+                        onChange={(e) =>
+                          setForm({ ...form, buyerName: e.target.value })
+                        }
+                        placeholder="Full name"
+                      />
+                    </Field>
+                    <Field label="Buyer email (optional)">
+                      <input
+                        type="email"
+                        value={form.buyerEmail || ""}
+                        onChange={(e) =>
+                          setForm({ ...form, buyerEmail: e.target.value })
+                        }
+                        placeholder="buyer@example.com"
+                      />
+                    </Field>
+                    <Field label="Buyer phone (optional)">
+                      <input
+                        value={form.buyerPhone || ""}
+                        onChange={(e) =>
+                          setForm({ ...form, buyerPhone: e.target.value })
+                        }
+                        placeholder="+234..."
+                      />
+                    </Field>
+                  </div>
+                  <div className="form-section-title">
+                    <span>02</span>
+                    <div>
+                      <h3>Item information</h3>
+                      <p>
+                        Be specific. These details become part of the agreement.
+                      </p>
+                    </div>
+                  </div>
+                  <div className="form-grid">
+                    <Field label="Item name">
+                      <input
+                        required
+                        value={form.description || ""}
+                        onChange={(e) =>
+                          setForm({ ...form, description: e.target.value })
+                        }
+                        placeholder="e.g. Samsung Galaxy A15"
+                      />
+                    </Field>
+                    <Field label="Quantity">
+                      <input
+                        required
+                        min="1"
+                        type="number"
+                        value={form.quantity || ""}
+                        onChange={(e) =>
+                          setForm({ ...form, quantity: e.target.value })
+                        }
+                        placeholder="1"
+                      />
+                    </Field>
+                    <Field label="Unit price (₦)">
+                      <input
+                        required
+                        min="1"
+                        type="number"
+                        value={form.price || ""}
+                        onChange={(e) =>
+                          setForm({ ...form, price: e.target.value })
+                        }
+                        placeholder="220000"
+                      />
+                    </Field>
+                    <Field label="Condition">
+                      <select
+                        value={form.condition || "Brand new"}
+                        onChange={(e) =>
+                          setForm({ ...form, condition: e.target.value })
+                        }
+                      >
+                        <option>Brand new</option>
+                        <option>Used — excellent</option>
+                        <option>Used — good</option>
+                        <option>Refurbished — Grade A</option>
+                        <option>Other</option>
+                      </select>
+                    </Field>
+                    <Field label="Detailed specification">
+                      <textarea
+                        required
+                        value={form.specification || ""}
+                        onChange={(e) =>
+                          setForm({ ...form, specification: e.target.value })
+                        }
+                        placeholder="Model, size, colour, features..."
+                      />
+                    </Field>
+                    <Field label="Acceptance / rejection condition">
+                      <textarea
+                        required
+                        value={form.conditionText || ""}
+                        onChange={(e) =>
+                          setForm({ ...form, conditionText: e.target.value })
+                        }
+                        placeholder="What must match the agreement?"
+                      />
+                    </Field>
+                  </div>
+                  {(form.additionalItems || []).map((item, index) => (
+                    <div className="extra-item">
+                      <div className="extra-item-head">
+                        <b>Additional item {index + 2}</b>
+                        <button
+                          type="button"
+                          className="text-link"
+                          onClick={() =>
+                            setForm({
+                              ...form,
+                              additionalItems: form.additionalItems.filter(
+                                (_, i) => i !== index,
+                              ),
+                            })
+                          }
+                        >
+                          <X size={13} /> Remove
+                        </button>
+                      </div>
+                      <div className="form-grid">
+                        <Field label="Item name">
+                          <input
+                            required
+                            value={item.description || ""}
+                            onChange={(e) => {
+                              const a = [...form.additionalItems];
+                              a[index] = {
+                                ...a[index],
+                                description: e.target.value,
+                              };
+                              setForm({ ...form, additionalItems: a });
+                            }}
+                          />
+                        </Field>
+                        <Field label="Quantity">
+                          <input
+                            required
+                            min="1"
+                            type="number"
+                            value={item.quantity || 1}
+                            onChange={(e) => {
+                              const a = [...form.additionalItems];
+                              a[index] = {
+                                ...a[index],
+                                quantity: e.target.value,
+                              };
+                              setForm({ ...form, additionalItems: a });
+                            }}
+                          />
+                        </Field>
+                        <Field label="Unit price (₦)">
+                          <input
+                            required
+                            min="1"
+                            type="number"
+                            value={item.price || ""}
+                            onChange={(e) => {
+                              const a = [...form.additionalItems];
+                              a[index] = { ...a[index], price: e.target.value };
+                              setForm({ ...form, additionalItems: a });
+                            }}
+                          />
+                        </Field>
+                        <Field label="Condition">
+                          <select
+                            value={item.condition || "Brand new"}
+                            onChange={(e) => {
+                              const a = [...form.additionalItems];
+                              a[index] = {
+                                ...a[index],
+                                condition: e.target.value,
+                              };
+                              setForm({ ...form, additionalItems: a });
+                            }}
+                          >
+                            <option>Brand new</option>
+                            <option>Used — excellent</option>
+                            <option>Used — good</option>
+                            <option>Refurbished — Grade A</option>
+                            <option>Other</option>
+                          </select>
+                        </Field>
+                        <Field label="Detailed specification">
+                          <textarea
+                            required
+                            value={item.specification || ""}
+                            onChange={(e) => {
+                              const a = [...form.additionalItems];
+                              a[index] = {
+                                ...a[index],
+                                specification: e.target.value,
+                              };
+                              setForm({ ...form, additionalItems: a });
+                            }}
+                          />
+                        </Field>
+                        <Field label="Acceptance / rejection condition">
+                          <textarea
+                            required
+                            value={item.conditionText || ""}
+                            onChange={(e) => {
+                              const a = [...form.additionalItems];
+                              a[index] = {
+                                ...a[index],
+                                conditionText: e.target.value,
+                              };
+                              setForm({ ...form, additionalItems: a });
+                            }}
+                          />
+                        </Field>
+                      </div>
+                    </div>
+                  ))}
+                  <button
+                    type="button"
+                    className="add-item-btn"
+                    onClick={() =>
+                      setForm({
+                        ...form,
+                        additionalItems: [
+                          ...(form.additionalItems || []),
+                          { quantity: 1, condition: "Brand new" },
+                        ],
+                      })
+                    }
+                  >
+                    <Plus size={15} /> Add another item
+                  </button>
+                  <div className="form-section-title">
+                    <span>03</span>
+                    <div>
+                      <h3>Delivery details</h3>
+                      <p>
+                        SupplyKey does not provide riders or courier services.
+                      </p>
+                    </div>
+                  </div>
+                  <div className="form-grid">
+                    <Field label="Destination city">
+                      <input
+                        required
+                        value={form.city || ""}
+                        onChange={(e) =>
+                          setForm({ ...form, city: e.target.value })
+                        }
+                        placeholder="Port Harcourt"
+                      />
+                    </Field>
+                    <Field label="Destination state">
+                      <select
+                        required
+                        value={form.state || ""}
+                        onChange={(e) =>
+                          setForm({ ...form, state: e.target.value })
+                        }
+                      >
+                        <option value="">Select state</option>
+                        {NG_STATES.map((s) => (
+                          <option>{s}</option>
+                        ))}
+                      </select>
+                    </Field>
+                    <Field label="Expected delivery (days)">
+                      <input
+                        min="1"
+                        type="number"
+                        value={form.days || 5}
+                        onChange={(e) =>
+                          setForm({ ...form, days: e.target.value })
+                        }
+                      />
+                    </Field>
+                    <Field
+                      label="Delivery fee (₦)"
+                      hint="Disabled until the fee payer and refund policy are approved (OD-05)."
+                    >
+                      <input type="number" value="0" disabled />
+                    </Field>
+                    <Field label="Additional terms">
+                      <textarea
+                        value={form.terms || ""}
+                        onChange={(e) =>
+                          setForm({ ...form, terms: e.target.value })
+                        }
+                        placeholder="Optional transaction-specific terms"
+                      />
+                    </Field>
+                  </div>
+                </section>
+                <aside className="panel summary-panel">
+                  <h3>Transaction summary</h3>
+                  <p>Amounts are calculated again by the backend.</p>
+                  <div className="summary-line">
+                    <span>Quantity</span>
+                    <b>{form.quantity || "—"}</b>
+                  </div>
+                  <div className="summary-line">
+                    <span>Unit price</span>
+                    <b>{form.price ? money(Number(form.price) * 100) : "—"}</b>
+                  </div>
+                  <div className="summary-line">
+                    <span>Delivery fee</span>
+                    <b>{money(Number(form.deliveryFee || 0) * 100)}</b>
+                  </div>
+                  <div className="summary-total">
+                    <span>Estimated total</span>
+                    <b>
+                      {form.price && form.quantity
+                        ? money(
+                            ([form, ...(form.additionalItems || [])].reduce(
+                              (sum, i) =>
+                                sum +
+                                Number(i.price || 0) * Number(i.quantity || 0),
+                              0,
+                            ) +
+                              Number(form.deliveryFee || 0)) *
+                              100,
+                          )
+                        : "—"}
+                    </b>
+                  </div>
+                  <div className="notice">
+                    <ShieldCheck size={17} />
+                    <span>
+                      Creating a draft does not collect payment or confirm
+                      funding.
+                    </span>
+                  </div>
+                  <Button type="submit" disabled={busy}>
+                    Create draft <ArrowRight size={16} />
+                  </Button>
+                </aside>
+              </form>
+            </>
+          )}
+          {page === "detail" && selected && (
+            <TransactionDetail
+              tx={selected}
+              role={role}
+              busy={busy}
+              onAction={act}
+              onUpload={uploadEvidence}
+              files={files}
+              setFiles={setFiles}
+              setModal={setModal}
+              setForm={setForm}
+              refresh={async () => {
+                setSelected(await api.transaction(selected.id));
+                refresh();
+              }}
+            />
+          )}
+          {page === "activity" && (
+            <>
+              <div className="page-heading">
+                <div>
+                  <span className="eyebrow">ACCOUNT ACTIVITY</span>
+                  <h1>Activity</h1>
+                  <p>Recent events recorded in this demo workspace.</p>
+                </div>
+              </div>
+              <section className="panel">
+                {api.mode === "mock" ? (
+                  <ActivityFeed items={api.getDemoState().audit} />
+                ) : (
+                  <Empty
+                    title="Activity feed not provided"
+                    text="The current API specification does not define a participant-wide activity feed. Transaction-specific details remain available in each record."
+                  />
+                )}
+              </section>
+            </>
+          )}
+          {page === "cases" && (
+            <>
+              <div className="page-heading">
+                <div>
+                  <span className="eyebrow">MODERATION</span>
+                  <h1>Case queue</h1>
+                  <p>Review acceptance submissions and active disputes.</p>
+                </div>
+              </div>
+              <div className="stats-grid compact">
+                <div className="stat-card">
+                  <span>All open cases</span>
+                  <strong>{queue.length}</strong>
+                </div>
+                <div className="stat-card">
+                  <span>Acceptance reviews</span>
+                  <strong>
+                    {
+                      queue.filter((q) => q.status === "SUBMITTED_FOR_REVIEW")
+                        .length
+                    }
+                  </strong>
+                </div>
+                <div className="stat-card">
+                  <span>Disputes</span>
+                  <strong>
+                    {
+                      queue.filter((q) => q.status !== "SUBMITTED_FOR_REVIEW")
+                        .length
+                    }
+                  </strong>
+                </div>
+              </div>
+              <section className="panel table-panel">
+                <QueueTable items={queue} onOpen={openCase} loading={loading} />
+                {(queueCursors.acceptance || queueCursors.disputes) && (
+                  <div className="pagination-actions">
+                    <Button
+                      variant="secondary"
+                      disabled={loadingMore}
+                      onClick={loadMoreQueue}
+                    >
+                      {loadingMore ? "Loading…" : "Load more cases"}
+                    </Button>
+                  </div>
+                )}
+              </section>
+            </>
+          )}
+          {page === "exceptions" && (
+            <>
+              <div className="page-heading">
+                <div>
+                  <span className="eyebrow">FINANCIAL OPERATIONS</span>
+                  <h1>Financial exceptions</h1>
+                  <p>
+                    Review failed or unknown instructions, unsecured payments
+                    and reconciliation mismatches.
+                  </p>
+                </div>
+              </div>
+              <section className="panel table-panel">
+                {role === "SENIOR_MODERATOR" ? (
+                  <>
+                    <ExceptionTable items={exceptions} onAction={act} />
+                    {exceptionCursor && (
+                      <div className="pagination-actions">
+                        <Button
+                          variant="secondary"
+                          disabled={loadingMore}
+                          onClick={loadMoreExceptions}
+                        >
+                          {loadingMore ? "Loading…" : "Load more exceptions"}
+                        </Button>
+                      </div>
+                    )}
+                  </>
+                ) : (
+                  <Empty
+                    title="Senior moderator access required"
+                    text="Financial exceptions are visible to senior moderators only."
+                  />
+                )}
+              </section>
+            </>
+          )}
+          {page === "audit" && (
+            <>
+              <div className="page-heading">
+                <div>
+                  <span className="eyebrow">ACCOUNTABILITY</span>
+                  <h1>Audit trail</h1>
+                  <p>
+                    {role === "ADMIN"
+                      ? "Administrative audit events returned by the backend."
+                      : "Actions recorded by the local adapter in this demo session."}
+                  </p>
+                </div>
+              </div>
+              <section className="panel">
+                {role === "ADMIN" ? (
+                  adminAudit.length ? (
+                    <>
+                      <ActivityFeed items={adminAudit} />
+                      {adminAuditCursor && (
+                        <div className="pagination-actions">
+                          <Button
+                            variant="secondary"
+                            disabled={loadingMore}
+                            onClick={loadMoreAdminAudit}
+                          >
+                            {loadingMore
+                              ? "Loading…"
+                              : "Load more audit events"}
+                          </Button>
+                        </div>
+                      )}
+                    </>
+                  ) : (
+                    <Empty
+                      title="No audit events returned"
+                      text="The admin audit endpoint returned no events."
+                    />
+                  )
+                ) : api.mode === "mock" ? (
+                  <ActivityFeed items={api.getDemoState().audit} />
+                ) : (
+                  <Empty
+                    title="Activity feed not provided"
+                    text="The current API specification does not define a participant-wide activity feed. Transaction-specific details remain available in each record."
+                  />
+                )}
+              </section>
+            </>
+          )}
+        </div>
+      </main>
+      {modal && (
+        <Modal
+          name={modal}
+          onClose={() => {
+            setModal("");
+            setError("");
+          }}
+          form={form}
+          setForm={setForm}
+          role={role}
+          busy={busy}
+          onSubmit={async (e) => {
+            e.preventDefault();
+            try {
+              if (modal === "case") {
+                const request = buildModeratorActionRequest({
+                  caseItem: form.case,
+                  detail: form.detail,
+                  action: form.caseAction,
+                  fields: form,
+                });
+                await act(request.path, request.body, request.headers);
+              }
+              setModal("");
+            } catch (e) {
+              setForm((prev) => ({
+                ...prev,
+                submitError:
+                  e?.data?.error?.message ||
+                  e?.message ||
+                  "The moderation action failed. Please try again.",
+              }));
+            }
+          }}
+          onRole={chooseRole}
+          onLogout={async () => {
+            try {
+              await api.action("/auth/logout");
+            } catch (e) {
+              setError(
+                e?.data?.error?.message ||
+                  "Server sign-out could not be confirmed; the local session was cleared.",
+              );
+            }
+            sessionStorage.clear();
+            setPage("login");
+            setModal("");
+          }}
+          onMfa={handleMfa}
+          onWorkspace={chooseWorkspace}
+          onAction={act}
+          onDispute={raiseDispute}
+          notifications={notifications}
+          setNotifications={setNotifications}
+        />
+      )}
+      {toast && (
+        <div className="toast">
+          <CheckCircle2 size={17} />
+          {toast}
+          {shareUrl && (
+            <a href={shareUrl} target="_blank" rel="noreferrer">
+              Open invitation <ArrowUpRight size={13} />
+            </a>
+          )}
+        </div>
+      )}
+    </div>
+  );
 }
-function ReceiptAction({tx,busy,invoke}){
- const dispatched=tx.lots?.filter(l=>l.item_status==='DISPATCHED')||[];
- const items=tx.items||[];
- const eligibleIds=[...new Set(dispatched.map(l=>l.item_id).filter(Boolean))];
- const eligibleItems=eligibleIds.map(id=>items.find(i=>i.id===id)).filter(i=>i&&String(i.description||i.name||'').trim());
- const [itemId,setItemId]=useState(eligibleIds[0]||'');
- const [quantity,setQuantity]=useState(1);
- const [submitting,setSubmitting]=useState(false);
- const [submitError,setSubmitError]=useState('');
- const available=dispatched.filter(l=>l.item_id===itemId).reduce((s,l)=>s+Number(l.quantity||0),0);
- const item=eligibleItems.find(i=>i.id===itemId);
- useEffect(()=>{if(!eligibleIds.includes(itemId))setItemId(eligibleIds[0]||'');},[eligibleIds.join('|'),itemId]);
- useEffect(()=>{setQuantity(available||1);setSubmitError('');},[itemId,available]);
- const canSubmit=!!itemId&&!!item&&available>0&&Number.isInteger(Number(quantity))&&Number(quantity)>=1&&Number(quantity)<=available&&!busy&&!submitting;
- const submit=async()=>{if(!canSubmit)return;setSubmitting(true);setSubmitError('');try{await invoke('delivery/confirm-received',{lines:[{item_id:itemId,quantity:Number(quantity)}]});}catch(e){setSubmitError(e?.data?.error?.message||e.message||'Receipt confirmation failed.');}finally{setSubmitting(false)}};
- return <div className="action-form"><b>Confirm physical receipt</b><p>Confirm only goods you have physically received. Photographs are submitted separately.</p>
-  {eligibleItems.length>0?<><Field label="Item"><select value={itemId} onChange={e=>setItemId(e.target.value)}>{eligibleItems.map(i=><option key={i.id} value={i.id}>{i.description||i.name}</option>)}</select></Field>
-  <Field label="Quantity received"><input type="number" min="1" max={available} value={quantity} onChange={e=>setQuantity(e.target.value)}/></Field>
-  <small className="muted">Available for receipt: {available} unit(s).</small></>:<div className="notice">{eligibleIds.length?'Dispatched goods were found, but their item descriptions are missing from this transaction. Receipt confirmation is blocked until the transaction data is corrected.':'There are no dispatched quantities awaiting receipt confirmation yet. The supplier must submit dispatch first.'}</div>}
-  {submitError&&<div className="alert error" role="alert">{submitError}</div>}
-  <Button disabled={!canSubmit} onClick={submit}>{submitting?'Confirming receipt…':'Confirm receipt'} <Check size={15}/></Button>
- </div>;
+function EvidencePreview({ evidence }) {
+  const [url, setUrl] = useState(""),
+    [error, setError] = useState(""),
+    [loading, setLoading] = useState(true);
+  useEffect(() => {
+    let active = true,
+      objectUrl = "";
+    setLoading(true);
+    setError("");
+    api
+      .evidenceFile(evidence.id)
+      .then((blob) => {
+        if (!active) return;
+        objectUrl = URL.createObjectURL(blob);
+        setUrl(objectUrl);
+      })
+      .catch((e) => {
+        if (active)
+          setError(
+            e?.data?.error?.message ||
+              e.message ||
+              "Unable to retrieve the evidence file.",
+          );
+      })
+      .finally(() => {
+        if (active) setLoading(false);
+      });
+    return () => {
+      active = false;
+      if (objectUrl) URL.revokeObjectURL(objectUrl);
+    };
+  }, [evidence.id]);
+  if (loading)
+    return <small className="muted">Loading private evidence file…</small>;
+  if (error)
+    return (
+      <div className="alert error" role="alert">
+        Evidence unavailable: {error}
+      </div>
+    );
+  if (!url) return null;
+  if (["image/jpeg", "image/png"].includes(evidence.mime_type))
+    return (
+      <a
+        href={url}
+        target="_blank"
+        rel="noreferrer"
+        className="evidence-preview-link"
+      >
+        <img
+          src={url}
+          alt={evidence.filename || "Uploaded evidence"}
+          className="evidence-preview-image"
+        />
+        <span>Open full-size image</span>
+      </a>
+    );
+  if (evidence.mime_type === "application/pdf")
+    return (
+      <div className="evidence-preview-document">
+        <iframe title={evidence.filename || "Evidence PDF"} src={url} />
+        <a href={url} target="_blank" rel="noreferrer">
+          Open PDF in a new tab
+        </a>
+      </div>
+    );
+  return (
+    <a
+      href={url}
+      download={evidence.filename || "evidence"}
+      target="_blank"
+      rel="noreferrer"
+      className="evidence-view"
+    >
+      Open / download {evidence.filename || "file"}
+    </a>
+  );
 }
-function EvidenceInline({purpose,txId,onUploaded,autoUploadOnSelect=false}){const[files,setFiles]=useState([]),[busy,setBusy]=useState(false),[error,setError]=useState('');const upload=async(selected=files)=>{if(selected.length>20){setError('A single submission can include at most 20 files.');return;}if(!selected.length)return;setBusy(true);setError('');try{const ids=[];for(const f of selected){const uploaded=await api.upload(f,purpose,txId);const id=uploaded?.id||uploaded?.evidence_id;if(!id)throw new Error('The server did not confirm the evidence upload. Please select the file again.');ids.push(id)}onUploaded(ids);setError(`${ids.length} file(s) verified`)}catch(e){onUploaded([]);setError(e.message)}finally{setBusy(false)}};const onFilesSelected=e=>{const selected=[...e.target.files];setFiles(selected);if(autoUploadOnSelect)void upload(selected)};return <div className="inline-upload"><input type="file" multiple accept="image/*,application/pdf,video/mp4" disabled={busy} onChange={onFilesSelected}/>{!autoUploadOnSelect&&<button type="button" className="text-link" disabled={!files.length||busy} onClick={()=>upload()}><Upload size={14}/> {busy?'Uploading…':'Upload evidence'}</button>}{busy&&<small>Uploading and verifying evidence…</small>}{error&&<small>{error}</small>}</div>}
-function DecisionAction({tx,busy,invoke,onAction,refresh}){
- const receiptLots=tx.lots?.filter(l=>l.item_status==='RECEIPT_CONFIRMED')||[];
- const items=tx.items||[];
- const eligibleIds=[...new Set(receiptLots.map(l=>l.item_id).filter(Boolean))];
- const eligibleItems=eligibleIds.map(id=>items.find(i=>i.id===id)||{id,description:id,conditions:[]});
- const buyerPhotoSubmitted=tx.delivery_photo_requirements?.some(r=>r.party_role==='BUYER'&&['SUBMITTED','SUBMITTED_LATE'].includes(r.status));
- const buyerPhotoRequirement=tx.delivery_photo_requirements?.find(r=>r.party_role==='BUYER'&&['PENDING','OVERDUE'].includes(r.status));
- const [itemId,setItemId]=useState(eligibleIds[0]||'');
- const item=eligibleItems.find(i=>i.id===itemId);
- const total=receiptLots.filter(l=>l.item_id===itemId).reduce((sum,l)=>sum+Number(l.quantity||0),0);
- const [accepted,setAccepted]=useState(total),[rejected,setRejected]=useState(0),[acceptedIds,setAcceptedIds]=useState([]),[rejectedIds,setRejectedIds]=useState([]),[reason,setReason]=useState(''),[condition,setCondition]=useState('');
- const [submitting,setSubmitting]=useState(false),[submitError,setSubmitError]=useState('');
- useEffect(()=>{if(!eligibleIds.includes(itemId))setItemId(eligibleIds[0]||'');},[eligibleIds.join('|'),itemId]);
- useEffect(()=>{setAccepted(total);setRejected(0);setAcceptedIds([]);setRejectedIds([]);setReason('');setCondition(item?.conditions?.find(c=>c.kind==='REJECTION')?.id||'');setSubmitError('');},[itemId,total]);
- const valid=!!itemId&&!!item&&!!buyerPhotoSubmitted&&Number.isInteger(Number(accepted))&&Number.isInteger(Number(rejected))&&accepted>=0&&rejected>=0&&accepted+rejected>0&&accepted+rejected<=total&&(accepted===0||acceptedIds.length>0)&&(rejected===0||rejectedIds.length>0)&&(rejected===0||reason.trim().length>=10)&&(rejected===0||!!condition);
- const submit=async()=>{if(!valid||busy||submitting)return;setSubmitting(true);setSubmitError('');try{await invoke('decisions',{lines:[{item_id:itemId,quantity_submitted:Number(accepted)+Number(rejected),quantity_accepted:Number(accepted),quantity_rejected:Number(rejected),accept_evidence_ids:acceptedIds,reject:Number(rejected)>0?{agreed_condition_ids:[condition],reason_text:reason,evidence_ids:rejectedIds}:undefined}]});}catch(e){setSubmitError(e?.data?.error?.message||e.message||'Your decision could not be submitted.');}finally{setSubmitting(false)}};
- return <div className="action-form"><b>Review received goods</b><p>Submit per-quantity acceptance and rejection. Accepted quantities still require moderator review; rejected quantities remain held pending return.</p>
-  {!buyerPhotoSubmitted&&<div className="notice"><CameraIcon/> Submit the buyer delivery photographs first. Select a photograph below. SupplyKey will upload it, verify it and submit it to this transaction automatically.</div>}
-  {!buyerPhotoSubmitted&&buyerPhotoRequirement&&<DeliveryPhotoAction txId={tx.id} requirement={buyerPhotoRequirement} busy={busy} onAction={onAction} refresh={refresh}/>}
-  {eligibleItems.length>0?<><Field label="Item"><select value={itemId} onChange={e=>setItemId(e.target.value)}>{eligibleItems.map(i=><option key={i.id} value={i.id}>{i.description||i.name}</option>)}</select></Field>
-  <Field label="Quantity accepted"><input type="number" min="0" max={total} value={accepted} onChange={e=>setAccepted(Number(e.target.value))}/></Field>
-  <Field label="Quantity rejected"><input type="number" min="0" max={total} value={rejected} onChange={e=>setRejected(Number(e.target.value))}/></Field>
-  <small className="muted">Total available: {total} unit(s). Accepted plus rejected quantities cannot exceed this amount.</small>
-  {accepted>0&&<><b className="mini-label">Acceptance proof</b><EvidenceInline purpose="ACCEPTANCE_PROOF" txId={tx.id} onUploaded={setAcceptedIds}/></>}
-  {rejected>0&&<><b className="mini-label">Rejection details</b><Field label="Agreed condition not met"><select value={condition} onChange={e=>setCondition(e.target.value)}><option value="">Select the unmet agreed condition</option>{(item?.conditions||[]).filter(c=>c.kind==='REJECTION').map(c=><option key={c.id} value={c.id}>{c.text}</option>)}</select></Field><Field label="Reason"><textarea value={reason} onChange={e=>setReason(e.target.value)} placeholder="Explain how the goods differ from the agreement"/></Field><EvidenceInline purpose="REJECTION_PROOF" txId={tx.id} onUploaded={setRejectedIds}/></>}
-  </>:<div className="notice">No received quantities are available for review. Confirm physical receipt first.</div>}
-  {submitError&&<div className="alert error" role="alert">{submitError}</div>}
-  <Button disabled={busy||submitting||!valid} onClick={submit}>{submitting?'Submitting for review…':'Submit for review'}</Button>
- </div>;
+function ApprovalPanel({ items, onAction }) {
+  const pending = (items || []).filter((i) => i.status === "PENDING_APPROVAL");
+  if (!pending.length) return null;
+  return (
+    <section className="panel approval-panel">
+      <div className="panel-head">
+        <div>
+          <h3>Awaiting second approval</h3>
+          <p>Approve or decline only as a different senior moderator.</p>
+        </div>
+        <Badge>PENDING_APPROVAL</Badge>
+      </div>
+      {pending.map((i) => (
+        <ApprovalRow item={i} onAction={onAction} />
+      ))}
+    </section>
+  );
 }
-function ReturnAction({tx,busy,onAction,refresh}){
- const [ids,setIds]=useState([]),[courier,setCourier]=useState(''),[rider,setRider]=useState(''),[phone,setPhone]=useState(''),[tracking,setTracking]=useState(''),[note,setNote]=useState('');
- const path=tx.return_id?`/returns/${tx.return_id}/handover-evidence`:'';
- return <div className="action-form">
-  <b>Return handover</b><p>The 72-hour supplier confirmation window starts when validated evidence is committed by the server.</p>
-  <Field label="Courier"><input value={courier} onChange={e=>setCourier(e.target.value)}/></Field>
-  <Field label="Rider name"><input value={rider} onChange={e=>setRider(e.target.value)}/></Field>
-  <Field label="Rider phone"><input value={phone} onChange={e=>setPhone(e.target.value)}/></Field>
-  <Field label="Tracking reference"><input value={tracking} onChange={e=>setTracking(e.target.value)}/></Field>
-  <Field label="Handover note"><textarea value={note} onChange={e=>setNote(e.target.value)}/></Field>
-  <EvidenceInline purpose="RETURN_HANDOVER" txId={tx.id} onUploaded={setIds}/>
-  <Button disabled={busy||!path||!ids.length||!courier||!rider||!phone} onClick={async()=>{await onAction(path,{evidence_ids:ids,courier_name:courier,rider_name:rider,rider_phone:phone,tracking_ref:tracking,note});await refresh()}}>Submit handover evidence</Button>
- </div>;
+function ApprovalRow({ item, onAction }) {
+  const [reason, setReason] = useState("");
+  return (
+    <div className="approval-row">
+      <div>
+        <b>{item.reference}</b>
+        <small>
+          {item.type} · {money(item.amount_kobo)}
+        </small>
+      </div>
+      <Badge>{item.status}</Badge>
+      <Button
+        onClick={() =>
+          onAction(
+            `/mod/${item.type.toLowerCase()}s/${item.id}/approve`,
+            {},
+            item.version !== undefined
+              ? { "If-Match": String(item.version) }
+              : {},
+          )
+        }
+      >
+        Approve
+      </Button>
+      <div className="decline-control">
+        <input
+          placeholder="Reason to decline"
+          value={reason}
+          onChange={(e) => setReason(e.target.value)}
+        />
+        <Button
+          variant="secondary"
+          disabled={!reason.trim()}
+          onClick={() =>
+            onAction(
+              `/mod/${item.type.toLowerCase()}s/${item.id}/decline`,
+              { reason },
+              item.version !== undefined
+                ? { "If-Match": String(item.version) }
+                : {},
+            )
+          }
+        >
+          Decline
+        </Button>
+      </div>
+    </div>
+  );
 }
-function ReturnReceiptAction({tx,busy,onAction,refresh}){const returnLots=tx.lots?.filter(l=>l.item_status==='RETURN_HANDOVER_RECORDED')||[];const[ids,setIds]=useState([]);const path=tx.return_id?`/returns/${tx.return_id}/confirm-receipt`:'';const submit=async()=>{await onAction(path,{lines:returnLots.map(l=>({lot_id:l.id,item_id:l.item_id,quantity_received:l.quantity})),evidence_ids:ids,note:'Supplier confirms receipt of all returned goods.'});await refresh();};return <div className="action-form"><b>Confirm receipt of returned goods</b><p>Confirming receipt is separate from the buyer's handover evidence. Confirm every authorized returned quantity and attach evidence of physical receipt.</p>{returnLots.map(l=><div className="summary-line"><span>{tx.items.find(i=>i.id===l.item_id)?.description||'Returned item'}</span><b>{l.quantity} unit(s)</b></div>)}<EvidenceInline purpose="RETURN_RECEIPT" txId={tx.id} onUploaded={setIds}/><Button disabled={busy||!path||!ids.length||!returnLots.length} onClick={submit}>Confirm receipt of returned goods</Button></div>}
+function TransactionTable({ items, onOpen }) {
+  if (!items.length)
+    return (
+      <Empty
+        title="No transactions found"
+        text="Transactions will appear here once they are created or shared."
+      />
+    );
+  return (
+    <div className="table-wrap">
+      <table>
+        <thead>
+          <tr>
+            <th>REFERENCE</th>
+            <th>PARTIES</th>
+            <th>DESTINATION</th>
+            <th>AMOUNT</th>
+            <th>STATUS</th>
+            <th />
+          </tr>
+        </thead>
+        <tbody>
+          {items.map((t) => (
+            <tr key={t.id} onClick={() => onOpen(t)}>
+              <td>
+                <b className="ref">{t.reference}</b>
+                <small>{dateOnly(t.created_at)}</small>
+              </td>
+              <td>
+                <b>{t.buyer}</b>
+                <small>with {t.supplier}</small>
+              </td>
+              <td>{t.destination}</td>
+              <td className="amount">{money(t.total_payable_kobo)}</td>
+              <td>
+                <Badge>{t.status}</Badge>
+              </td>
+              <td>
+                <button className="row-arrow">
+                  <ChevronRight size={17} />
+                </button>
+              </td>
+            </tr>
+          ))}
+        </tbody>
+      </table>
+    </div>
+  );
+}
+function ExceptionTable({ items, onAction }) {
+  if (!items.length)
+    return (
+      <Empty
+        title="No financial exceptions"
+        text="Unsecured payments, failed or unknown instructions and reconciliation mismatches will appear here when the backend reports them."
+      />
+    );
+  return (
+    <div className="exception-list">
+      {items.map((x) => (
+        <ExceptionRow key={x.id} item={x} onAction={onAction} />
+      ))}
+    </div>
+  );
+}
+function ExceptionRow({ item, onAction }) {
+  const [action, setAction] = useState(item.allowed_actions?.[0] || "");
+  const [reason, setReason] = useState("");
+  return (
+    <div className="exception-row">
+      <div>
+        <b>
+          {item.id} · {item.reference}
+        </b>
+        <p>{item.reason}</p>
+        <small>
+          {titleCase(item.type)} · {titleCase(item.status)}
+        </small>
+      </div>
+      {item.allowed_actions?.length > 0 && (
+        <div className="exception-controls">
+          <select value={action} onChange={(e) => setAction(e.target.value)}>
+            {item.allowed_actions.map((a) => (
+              <option value={a}>{a}</option>
+            ))}
+          </select>
+          <input
+            value={reason}
+            onChange={(e) => setReason(e.target.value)}
+            placeholder="Resolution reason"
+          />
+          <Button
+            disabled={!reason.trim() || !action}
+            onClick={() =>
+              onAction(
+                `/mod/financial-exceptions/${item.id}/resolve`,
+                { action, reason },
+                item.version !== undefined
+                  ? { "If-Match": String(item.version) }
+                  : {},
+              )
+            }
+          >
+            Resolve
+          </Button>
+        </div>
+      )}
+    </div>
+  );
+}
+function QueueTable({ items, onOpen, loading }) {
+  if (!items.length)
+    return (
+      <Empty
+        title={loading ? "Loading cases" : "Queue is clear"}
+        text="No cases currently require your attention."
+      />
+    );
+  return (
+    <div className="table-wrap">
+      <table>
+        <thead>
+          <tr>
+            <th>CASE</th>
+            <th>TRANSACTION</th>
+            <th>PARTIES</th>
+            <th>REVIEW WINDOW</th>
+            <th>STATUS</th>
+            <th />
+          </tr>
+        </thead>
+        <tbody>
+          {items.map((q) => (
+            <tr key={q.id} onClick={() => onOpen(q)}>
+              <td>
+                <b className="ref">{q.id}</b>
+                <small>{q.item}</small>
+              </td>
+              <td>
+                <b>{q.reference}</b>
+                <small>{money(q.amount_kobo)}</small>
+              </td>
+              <td>
+                <b>{q.buyer}</b>
+                <small>with {q.supplier}</small>
+              </td>
+              <td>
+                {q.decision_overdue ? (
+                  <span className="alert error">
+                    Decision overdue ·{" "}
+                    {q.decision_deadline_at
+                      ? dateTime(q.decision_deadline_at)
+                      : ""}
+                  </span>
+                ) : (
+                  <>
+                    {titleCase(q.window_status)}
+                    {q.decision_deadline_at && (
+                      <small>
+                        Decision due {dateTime(q.decision_deadline_at)}
+                      </small>
+                    )}
+                  </>
+                )}
+              </td>
+              <td>
+                <Badge>{q.status}</Badge>
+              </td>
+              <td>
+                <ChevronRight size={17} />
+              </td>
+            </tr>
+          ))}
+        </tbody>
+      </table>
+    </div>
+  );
+}
+function Empty({ title, text }) {
+  return (
+    <div className="empty">
+      <div>
+        <Inbox size={24} />
+      </div>
+      <b>{title}</b>
+      <p>{text}</p>
+    </div>
+  );
+}
+function ActivityFeed({ items }) {
+  return items?.length ? (
+    <div className="feed">
+      {items.map((a) => (
+        <div className="feed-item">
+          <div className="feed-dot">
+            <Check size={14} />
+          </div>
+          <div>
+            <b>{titleCase(a.action)}</b>
+            <p>{a.detail}</p>
+            <small>
+              {a.actor} · {dateTime(a.at)}
+            </small>
+          </div>
+        </div>
+      ))}
+    </div>
+  ) : (
+    <Empty
+      title="No activity yet"
+      text="Actions and important changes will be recorded here."
+    />
+  );
+}
+function DisputePanel({ tx, role }) {
+  const [items, setItems] = useState([]),
+    [loadError, setLoadError] = useState("");
+  const dispute = tx.dispute;
+  const ids = [
+    ...new Set([
+      ...(dispute?.lines || []).flatMap((x) => x.evidence_ids || []),
+      ...(dispute?.evidence_submissions || []).flatMap(
+        (x) => x.evidence_ids || [],
+      ),
+      ...(tx.decisions || [])
+        .filter((x) => x.dispute_id === dispute?.id)
+        .flatMap((x) => x.rejection_evidence_ids || []),
+      ...(tx.returns || []).flatMap((r) => [
+        ...(r.handover_evidence_ids || []),
+        ...(r.additional_evidence_ids || []),
+        ...(r.supplier_evidence_ids || []),
+      ]),
+    ]),
+  ];
+  useEffect(() => {
+    let active = true;
+    if (!dispute?.id) {
+      setItems([]);
+      return () => {
+        active = false;
+      };
+    }
+    Promise.all(ids.map((id) => api.evidence(id)))
+      .then((rows) => {
+        if (active) {
+          setItems(rows);
+          setLoadError("");
+        }
+      })
+      .catch((e) => {
+        if (active)
+          setLoadError(
+            e.data?.error?.message ||
+              e.message ||
+              "Could not load dispute evidence.",
+          );
+      });
+    return () => {
+      active = false;
+    };
+  }, [dispute?.id, ids.join("|")]);
+  if (!dispute?.id) return null;
+  const ret =
+    (tx.returns || []).find((r) => r.id === tx.return_id) ||
+    (tx.returns || []).at(-1);
+  const refund =
+    tx.settlement?.dispute_refund_status ||
+    ret?.refund_eligibility_status ||
+    "Not authorized";
+  if (role === "SUPPLIER")
+    return (
+      <section className="panel detail-panel supplier-dispute-panel">
+        <div className="panel-head">
+          <div>
+            <span className="eyebrow">ACTION REQUIRED · {tx.reference}</span>
+            <h3>Buyer rejected the package.</h3>
+            <p>This return and its receipt must be recorded separately.</p>
+          </div>
+          <Badge>{dispute.status || "UNDER_REVIEW"}</Badge>
+        </div>
+        <div className="summary-line">
+          <span>Rejection status</span>
+          <b>{titleCase(dispute.status || "Submitted")}</b>
+        </div>
+        <div className="summary-line">
+          <span>Return status</span>
+          <b>
+            {ret?.status
+              ? titleCase(ret.status)
+              : dispute.return_required
+                ? "Awaiting buyer return"
+                : "Awaiting moderator decision"}
+          </b>
+        </div>
+        <div className="summary-line">
+          <span>Receipt confirmation</span>
+          <b>
+            {ret?.supplier_receipt_confirmed_at
+              ? `Confirmed · ${dateTime(ret.supplier_receipt_confirmed_at)}`
+              : "Not confirmed"}
+          </b>
+        </div>
+        <div className="summary-line">
+          <span>Dispute refund</span>
+          <b>{titleCase(refund)}</b>
+        </div>
+        {ret?.status === "CONTESTED" && (
+          <div className="alert error">
+            You disputed the return. A moderator must review the evidence; no
+            refund will be released automatically.
+          </div>
+        )}
+        {ret?.supplier_receipt_confirmed_at && (
+          <div className="notice">
+            Your receipt confirmation was recorded at{" "}
+            {dateTime(ret.supplier_receipt_confirmed_at)}.
+          </div>
+        )}
+        {loadError && (
+          <div className="alert error" role="alert">
+            {loadError}
+          </div>
+        )}
+      </section>
+    );
+  const events = [
+    ...(dispute.evidence_submissions || []).map((x) => ({
+      at: x.created_at,
+      title:
+        x.party === "BUYER"
+          ? "Rejection submitted"
+          : "Supplier response submitted",
+      detail: x.statement || x.kind,
+    })),
+    ...(tx.returns || []).flatMap((r) =>
+      [
+        {
+          at: r.handover_committed_at,
+          title: "Return handover submitted",
+          detail: r.tracking_ref || "Buyer submitted return evidence",
+        },
+        {
+          at: r.supplier_receipt_confirmed_at,
+          title: "Supplier confirmed receipt",
+          detail: "Physical receipt confirmed by supplier",
+        },
+      ].filter((x) => x.at),
+    ),
+    ...(dispute.decision?.created_at
+      ? [
+          {
+            at: dispute.decision.created_at,
+            title: "Moderator decision recorded",
+            detail: dispute.decision.reason,
+          },
+        ]
+      : []),
+    ...(dispute.refund_authorized_at
+      ? [
+          {
+            at: dispute.refund_authorized_at,
+            title: "Refund authorized",
+            detail: `Authorized by moderator ${dispute.refund_authorized_by || ""}`,
+          },
+        ]
+      : []),
+  ].sort((a, b) => new Date(a.at) - new Date(b.at));
+  return (
+    <section className="panel detail-panel buyer-dispute-panel">
+      <div className="panel-head">
+        <div>
+          <span className="eyebrow">YOUR REJECTION</span>
+          <h3>Rejection submitted</h3>
+          <p>
+            Your case is being reviewed. Refund completion is confirmed only by
+            the payment provider.
+          </p>
+        </div>
+        <Badge>{dispute.status || "UNDER_REVIEW"}</Badge>
+      </div>
+      <div className="summary-line">
+        <span>Case status</span>
+        <b>{titleCase(dispute.status || "Submitted")}</b>
+      </div>
+      <div className="summary-line">
+        <span>Return progress</span>
+        <b>
+          {ret?.supplier_receipt_confirmed_at
+            ? "Supplier confirmed receipt"
+            : ret?.handover_committed_at
+              ? "Return handed over"
+              : dispute.return_required
+                ? "Return required"
+                : "Awaiting moderator decision"}
+        </b>
+      </div>
+      <div className="summary-line">
+        <span>Refund progress</span>
+        <b>{titleCase(refund)}</b>
+      </div>
+      {dispute.decision_deadline_at && (
+        <div className="summary-line">
+          <span>Moderator decision due</span>
+          <b>{dateTime(dispute.decision_deadline_at)}</b>
+        </div>
+      )}
+      {dispute.decision_overdue && (
+        <div className="alert error" role="alert">
+          Moderator decision overdue. The case is escalated; no automatic refund
+          or payout is triggered.
+        </div>
+      )}
+      {dispute.return_confirmation_overdue && (
+        <div className="alert error" role="alert">
+          Supplier receipt confirmation is overdue. Refund remains blocked.
+        </div>
+      )}
+      {dispute.decision?.reason && (
+        <div className="case-note">
+          <b>Moderator decision</b>
+          <p>{dispute.decision.reason}</p>
+        </div>
+      )}
+      <b>Case progress</b>
+      {events.length ? (
+        <ActivityFeed
+          items={events.map((x) => ({
+            action: x.title,
+            detail: x.detail,
+            actor: "SupplyKey workflow",
+            at: x.at,
+          }))}
+        />
+      ) : (
+        <p className="muted">
+          Your rejection has been recorded. Updates will appear here as the case
+          progresses.
+        </p>
+      )}
+      {loadError && (
+        <div className="alert error" role="alert">
+          {loadError}
+        </div>
+      )}
+      <b>Submitted evidence</b>
+      {items.length
+        ? items.map((ev) => (
+            <div className="case-evidence">
+              <div>
+                <b>{ev.filename}</b>
+                <small>
+                  {ev.purpose} · {ev.status} · {ev.size_bytes} bytes
+                </small>
+              </div>
+              <EvidencePreview evidence={ev} />
+            </div>
+          ))
+        : !loadError && (
+            <p className="muted">
+              No evidence references are attached to this dispute yet.
+            </p>
+          )}
+    </section>
+  );
+}
+function TransactionDetail({
+  tx,
+  role,
+  busy,
+  onAction,
+  onUpload,
+  files,
+  setFiles,
+  setModal,
+  setForm,
+  refresh,
+}) {
+  const [tab, setTab] = useState("overview"),
+    [agreementData, setAgreementData] = useState(null),
+    [returnData, setReturnData] = useState(null),
+    [instructions, setInstructions] = useState([]),
+    [quantity, setQuantity] = useState(1),
+    [reason, setReason] = useState(""),
+    [reasonCode, setReasonCode] = useState("SPEC_DISAGREEMENT"),
+    [courier, setCourier] = useState(""),
+    [rider, setRider] = useState(""),
+    [tracking, setTracking] = useState(""),
+    [detailLoadError, setDetailLoadError] = useState("");
+  const isBuyer = role === "BUYER",
+    isSupplier = role === "SUPPLIER";
+  const allowed = tx.allowed_actions || [];
+  const evidence = async (purpose) => await onUpload(purpose);
+  useEffect(() => {
+    let active = true;
+    setDetailLoadError("");
+    if (tab === "agreement")
+      api
+        .agreement(tx.id)
+        .then((x) => {
+          if (active) setAgreementData(x);
+        })
+        .catch((e) => {
+          if (active) {
+            setAgreementData(null);
+            setDetailLoadError(
+              e?.data?.error?.message ||
+                e.message ||
+                "Unable to load the agreement.",
+            );
+          }
+        });
+    if (tx.return_id)
+      api
+        .returnDetail(tx.return_id)
+        .then((x) => {
+          if (active) setReturnData(x);
+        })
+        .catch((e) => {
+          if (active) {
+            setReturnData(null);
+            setDetailLoadError(
+              e?.data?.error?.message ||
+                e.message ||
+                "Unable to load the return record.",
+            );
+          }
+        });
+    Promise.all([
+      api.financialInstructions(tx.id, "payouts"),
+      api.financialInstructions(tx.id, "refunds"),
+    ])
+      .then(([p, r]) => {
+        if (active) setInstructions([...(p || []), ...(r || [])]);
+      })
+      .catch((e) => {
+        if (active) {
+          setInstructions([]);
+          setDetailLoadError(
+            e?.data?.error?.message ||
+              e.message ||
+              "Unable to load payout and refund instructions.",
+          );
+        }
+      });
+    return () => {
+      active = false;
+    };
+  }, [tab, tx.id, tx.return_id]);
+  const invoke = async (path, body, headers) => {
+    await onAction(`/transactions/${tx.id}/${path}`, body, headers);
+    await refresh();
+  };
+  const activePayment = tx.payments?.at(-1),
+    hasPendingPayment = tx.payments?.some((p) =>
+      ["PENDING", "PAYMENT_RECEIVED", "UNKNOWN"].includes(p.status),
+    );
+  useEffect(() => {
+    if (!hasPendingPayment) return;
+    let active = true,
+      inFlight = false;
+    const poll = async () => {
+      if (inFlight) return;
+      inFlight = true;
+      try {
+        if (activePayment?.payment_id) {
+          await api.action(
+            `/transactions/${tx.id}/payments/${activePayment.payment_id}/refresh`,
+            {},
+          );
+        }
+        if (active) await refresh();
+      } catch (e) {
+        if (active)
+          setDetailLoadError(
+            e?.data?.error?.message ||
+              e.message ||
+              "Payment status refresh failed. The last confirmed state is still shown.",
+          );
+      } finally {
+        inFlight = false;
+      }
+    };
+    const timer = setInterval(poll, 10000);
+    return () => {
+      active = false;
+      clearInterval(timer);
+    };
+  }, [
+    tx.id,
+    hasPendingPayment,
+    activePayment?.payment_id,
+    activePayment?.mode,
+  ]);
+  return (
+    <>
+      <div className="detail-heading">
+        <div>
+          <button className="back-link" onClick={() => history.back()}>
+            <ArrowLeft size={15} /> Back
+          </button>
+          <div className="detail-title">
+            <div>
+              <span className="eyebrow">TRANSACTION · {tx.reference}</span>
+              <h1>{tx.reference}</h1>
+              <p>
+                {tx.buyer} <span>with</span> {tx.supplier}
+              </p>
+            </div>
+            <Badge>{tx.status}</Badge>
+          </div>
+        </div>
+        <button className="outline-btn" onClick={() => setTab("agreement")}>
+          <FileText size={16} /> View agreement
+        </button>
+      </div>
+      <div className="detail-layout">
+        <div className="detail-main">
+          <div className="tabs">
+            <button
+              className={tab === "overview" ? "selected" : ""}
+              onClick={() => setTab("overview")}
+            >
+              Overview
+            </button>
+            <button
+              className={tab === "agreement" ? "selected" : ""}
+              onClick={() => setTab("agreement")}
+            >
+              Agreement
+            </button>
+            <button
+              className={tab === "evidence" ? "selected" : ""}
+              onClick={() => setTab("evidence")}
+            >
+              Evidence & delivery
+            </button>
+            <button
+              className={tab === "history" ? "selected" : ""}
+              onClick={() => setTab("history")}
+            >
+              History
+            </button>
+          </div>
+          {detailLoadError && (
+            <div className="alert error" role="alert">
+              {detailLoadError}
+            </div>
+          )}
+          {tab === "overview" && (
+            <>
+              <DisputePanel tx={tx} role={role} />
+              <section className="panel detail-panel">
+                <div className="panel-head">
+                  <div>
+                    <h3>Transaction progress</h3>
+                    <p>
+                      Transaction funding state and item-lot progress are
+                      separate backend states.
+                    </p>
+                  </div>
+                  <Badge>{tx.status}</Badge>
+                </div>
+                <Timeline status={tx.status} />
+              </section>
+              <section className="panel detail-panel">
+                <div className="panel-head">
+                  <div>
+                    <h3>Quantity lots</h3>
+                    <p>Fulfilment status is tracked per quantity lot.</p>
+                  </div>
+                </div>
+                {tx.lots?.length ? (
+                  tx.lots.map((l) => (
+                    <div className="requirement">
+                      <div>
+                        <b>
+                          {l.id} · {l.quantity} unit(s)
+                        </b>
+                        <small>Money status: {titleCase(l.money_status)}</small>
+                      </div>
+                      <Badge>{l.item_status}</Badge>
+                    </div>
+                  ))
+                ) : (
+                  <p className="muted">No quantity lots returned yet.</p>
+                )}
+              </section>
+              {tx.evidence_requests
+                ?.filter((r) => r.status === "OPEN")
+                .map((r) => (
+                  <section className="panel detail-panel">
+                    <div className="notice">
+                      <AlertCircle size={16} /> Evidence requested from{" "}
+                      {r.party}: {r.question} · Due {dateTime(r.due_at)}
+                    </div>
+                  </section>
+                ))}
+              {tx.decisions?.map((d) => (
+                <section className="panel detail-panel">
+                  <div className="panel-head">
+                    <div>
+                      <h3>Acceptance evidence window</h3>
+                      <p>Both parties can add evidence or waive the window.</p>
+                    </div>
+                    <Badge>{d.evidence_window.status}</Badge>
+                  </div>
+                  <div className="summary-line">
+                    <span>Window closes</span>
+                    <b>
+                      {d.evidence_window.ends_at
+                        ? dateTime(d.evidence_window.ends_at)
+                        : "Not set"}
+                    </b>
+                  </div>
+                  <div className="summary-line">
+                    <span>Buyer waiver</span>
+                    <b>{d.waivers?.BUYER ? "Waived" : "Not waived"}</b>
+                  </div>
+                  <div className="summary-line">
+                    <span>Supplier waiver</span>
+                    <b>{d.waivers?.SUPPLIER ? "Waived" : "Not waived"}</b>
+                  </div>
+                </section>
+              ))}
+              {(tx.dispatch_deadline_at ||
+                tx.inspection_deadline_at ||
+                tx.return_confirmation_deadline_at) && (
+                <section className="panel detail-panel">
+                  <div className="panel-head">
+                    <div>
+                      <h3>Important deadlines</h3>
+                      <p>
+                        Deadlines are calculated and returned by the backend.
+                      </p>
+                    </div>
+                    <Clock size={17} />
+                  </div>
+                  {tx.dispatch_deadline_at && (
+                    <div className="summary-line">
+                      <span>Dispatch deadline</span>
+                      <b>{dateTime(tx.dispatch_deadline_at)}</b>
+                    </div>
+                  )}
+                  {tx.inspection_deadline_at && (
+                    <div className="summary-line">
+                      <span>Inspection deadline</span>
+                      <b>{dateTime(tx.inspection_deadline_at)}</b>
+                    </div>
+                  )}
+                  {tx.return_confirmation_deadline_at && (
+                    <div className="summary-line">
+                      <span>Return confirmation deadline</span>
+                      <b>{dateTime(tx.return_confirmation_deadline_at)}</b>
+                    </div>
+                  )}
+                </section>
+              )}
+              {tx.dispatches?.length > 0 && (
+                <section className="panel detail-panel">
+                  <div className="panel-head">
+                    <div>
+                      <h3>Dispatch tracking</h3>
+                      <p>Supplier declarations and courier details.</p>
+                    </div>
+                    <Truck size={17} />
+                  </div>
+                  {tx.dispatches.map((d) => (
+                    <div className="dispatch-card">
+                      <div className="summary-line">
+                        <span>Courier</span>
+                        <b>{d.courier_name || "Not supplied"}</b>
+                      </div>
+                      <div className="summary-line">
+                        <span>Rider</span>
+                        <b>
+                          {d.rider_name || "Not supplied"} {d.rider_phone || ""}
+                        </b>
+                      </div>
+                      <div className="summary-line">
+                        <span>Tracking reference</span>
+                        <b>{d.tracking_ref || "Not supplied"}</b>
+                      </div>
+                      <small>
+                        Declared{" "}
+                        {d.declared_at
+                          ? dateTime(d.declared_at)
+                          : "time not supplied"}
+                      </small>
+                    </div>
+                  ))}
+                </section>
+              )}
+              {returnData && (
+                <section className="panel detail-panel">
+                  <div className="panel-head">
+                    <div>
+                      <h3>Return record</h3>
+                      <p>
+                        Return quantities and server-controlled confirmation
+                        deadline.
+                      </p>
+                    </div>
+                    <Badge>
+                      {returnData.status || "RETURN_STATUS_UNAVAILABLE"}
+                    </Badge>
+                  </div>
+                  {returnData.lines?.map((l) => (
+                    <div className="summary-line">
+                      <span>
+                        {tx.items.find((i) => i.id === l.item_id)
+                          ?.description || l.item_id}
+                      </span>
+                      <b>{l.quantity} unit(s)</b>
+                    </div>
+                  ))}
+                  {returnData.handover_committed_at && (
+                    <div className="summary-line">
+                      <span>Handover committed</span>
+                      <b>{dateTime(returnData.handover_committed_at)}</b>
+                    </div>
+                  )}
+                  {returnData.confirmation_deadline_at && (
+                    <div className="summary-line">
+                      <span>Confirmation deadline</span>
+                      <b>{dateTime(returnData.confirmation_deadline_at)}</b>
+                    </div>
+                  )}
+                  <ReturnAdditionalEvidenceAction
+                    tx={tx}
+                    role={role}
+                    onAction={onAction}
+                    refresh={refresh}
+                    busy={busy}
+                  />
+                </section>
+              )}
+              {instructions.length > 0 && (
+                <section className="panel detail-panel">
+                  <div className="panel-head">
+                    <div>
+                      <h3>Payout and refund instructions</h3>
+                      <p>
+                        Instruction status only; this is not proof of
+                        settlement.
+                      </p>
+                    </div>
+                    <Wallet size={17} />
+                  </div>
+                  {instructions.map((i) => (
+                    <div className="requirement">
+                      <div>
+                        <b>
+                          {i.type}
+                          {i.id ? ` · ${i.id}` : ""}
+                        </b>
+                        <small>
+                          {i.amount_kobo !== undefined
+                            ? money(i.amount_kobo)
+                            : "Status only"}{" "}
+                          ·{" "}
+                          {i.origin_type ||
+                            i.refund_classification ||
+                            "Settlement progress"}
+                        </small>
+                      </div>
+                      <Badge>{i.status}</Badge>
+                    </div>
+                  ))}
+                </section>
+              )}
+              <section className="panel detail-panel">
+                <div className="panel-head">
+                  <div>
+                    <h3>Items in this transaction</h3>
+                    <p>Agreed specifications and quantities.</p>
+                  </div>
+                </div>
+                {tx.items.map((i) => (
+                  <div className="item-row">
+                    <div className="item-thumb">
+                      <Package size={23} />
+                    </div>
+                    <div className="item-info">
+                      <b>{i.description}</b>
+                      <p>{i.specification}</p>
+                      <small>
+                        Qty {i.quantity} · {money(i.unit_price_kobo)} each
+                      </small>
+                    </div>
+                    <b>{money(i.quantity * i.unit_price_kobo)}</b>
+                  </div>
+                ))}
+              </section>
+              {tx.dispute && (
+                <section className="panel detail-panel">
+                  <div className="panel-head">
+                    <div>
+                      <h3>Dispute summary</h3>
+                      <p>{titleCase(tx.dispute.reason_code)}</p>
+                    </div>
+                    <Badge>{tx.dispute.status}</Badge>
+                  </div>
+                  <p>{tx.dispute.statement}</p>
+                  <div className="notice">
+                    <Clock size={16} /> Evidence window ends{" "}
+                    {tx.dispute.window_ends_at
+                      ? dateTime(tx.dispute.window_ends_at)
+                      : "when set by backend"}
+                    .
+                  </div>
+                  {allowed.includes("add_dispute_evidence") && (
+                    <DisputeEvidenceAction
+                      dispute={tx.dispute}
+                      tx={tx}
+                      busy={busy}
+                      onAction={onAction}
+                      refresh={refresh}
+                    />
+                  )}
+                </section>
+              )}
+            </>
+          )}
+          {tab === "agreement" && (
+            <section className="panel detail-panel">
+              <div className="panel-head">
+                <div>
+                  <h3>Agreement versions</h3>
+                  <p>
+                    Review the exact version and content hash before confirming.
+                  </p>
+                </div>
+                <FileCheck />
+              </div>
+              {agreementData?.versions?.length ? (
+                agreementData.versions.map((v) => (
+                  <div className="agreement-item">
+                    <b>
+                      Version {v.version || "—"}{" "}
+                      {v.id === agreementData.current_version?.id && (
+                        <Badge>Current</Badge>
+                      )}
+                    </b>
+                    <p>
+                      {v.terms ||
+                        "Item specifications, conditions, delivery and general terms are included in this version."}
+                    </p>
+                    <div className="agreement-meta">
+                      <span>Version ID: {v.id}</span>
+                      <span>
+                        Hash: {(v.content_hash || "Not available").slice(0, 22)}
+                        …
+                      </span>
+                    </div>
+                    {v.created_at && <small>{dateTime(v.created_at)}</small>}
+                  </div>
+                ))
+              ) : (
+                <div className="empty">
+                  <b>Agreement versions unavailable</b>
+                  <p>
+                    The backend did not return a version history. Reload before
+                    confirming.
+                  </p>
+                </div>
+              )}
+              {isBuyer &&
+                allowed.includes("accept_invitation") &&
+                tx.status === "AWAITING_BUYER_AGREEMENT" && (
+                  <div className="notice">
+                    <ShieldCheck size={16} /> This transaction is assigned to
+                    your account, but the supplier invitation still needs your
+                    acceptance. Accepting does not confirm the agreement or
+                    start payment.
+                    <Button
+                      disabled={busy}
+                      onClick={() => invoke("invitation/accept", {})}
+                    >
+                      Accept supplier invitation <ArrowRight size={16} />
+                    </Button>
+                  </div>
+                )}
+              {isBuyer &&
+                allowed.includes("agree") &&
+                tx.status === "AWAITING_BUYER_AGREEMENT" &&
+                agreementData?.current_version?.id && (
+                  <Button
+                    disabled={
+                      busy || !agreementData.current_version.content_hash
+                    }
+                    onClick={() =>
+                      invoke("agreement/confirm", {
+                        agreement_version_id: agreementData.current_version.id,
+                        content_hash:
+                          agreementData.current_version.content_hash,
+                      })
+                    }
+                  >
+                    Confirm current agreement <Check size={16} />
+                  </Button>
+                )}
+              {agreementData?.buyer_confirmation && (
+                <div className="notice">
+                  <CheckCircle2 size={16} /> Buyer confirmed this agreement on{" "}
+                  {dateTime(agreementData.buyer_confirmation.confirmed_at)}.
+                </div>
+              )}
+            </section>
+          )}
+          {tab === "evidence" && (
+            <>
+              <section className="panel detail-panel">
+                <div className="panel-head">
+                  <div>
+                    <h3>Delivery photographs</h3>
+                    <p>
+                      Photos are evidence only; receipt must be confirmed
+                      separately.
+                    </p>
+                  </div>
+                  <CameraIcon />
+                </div>
+                {tx.delivery_photo_requirements?.length ? (
+                  tx.delivery_photo_requirements.map((r) => (
+                    <div className="requirement">
+                      <div>
+                        <b>{titleCase(r.party_role)} photographs</b>
+                        <small>
+                          Due{" "}
+                          {r.due_at ? dateTime(r.due_at) : "Date not supplied"}
+                        </small>
+                      </div>
+                      <Badge>{r.status}</Badge>
+                      {r.party_role === role &&
+                        ["PENDING", "OVERDUE"].includes(r.status) && (
+                          <DeliveryPhotoAction
+                            txId={tx.id}
+                            requirement={r}
+                            busy={busy}
+                            onAction={onAction}
+                            refresh={refresh}
+                          />
+                        )}
+                    </div>
+                  ))
+                ) : (
+                  <Empty
+                    title="No delivery photo requirements"
+                    text="Requirements are created by the backend at dispatch and receipt confirmation."
+                  />
+                )}
+              </section>
+              <section className="panel detail-panel">
+                <h3>Evidence handling</h3>
+                <p className="muted">
+                  Evidence is uploaded through the relevant dispatch, delivery,
+                  acceptance, rejection, return or dispute action. A file that
+                  is not linked to an event is not evidence for that event.
+                </p>
+              </section>
+            </>
+          )}
+          {tab === "history" && (
+            <section className="panel detail-panel">
+              <h3>Transaction events</h3>
+              {tx.timeline?.length ? (
+                <ActivityFeed items={tx.timeline} />
+              ) : api.mode === "mock" ? (
+                <ActivityFeed
+                  items={api
+                    .getDemoState()
+                    .audit.filter((a) => a.detail === tx.reference)}
+                />
+              ) : (
+                <Empty
+                  title="Transaction event history unavailable"
+                  text="The live transaction detail contract does not include an event timeline."
+                />
+              )}
+            </section>
+          )}
+        </div>
+        <aside className="detail-side">
+          <section className="panel side-panel">
+            <h3>Transaction summary</h3>
+            <div className="summary-line">
+              <span>Goods total</span>
+              <b>{money(tx.goods_total_kobo)}</b>
+            </div>
+            <div className="summary-line">
+              <span>Delivery fee</span>
+              <b>{money(tx.delivery_fee_kobo)}</b>
+            </div>
+            <div className="summary-line">
+              <span>Platform fee</span>
+              <b>{money(tx.platform_fee_kobo || 0)}</b>
+            </div>
+            <div className="summary-total">
+              <span>Total payable</span>
+              <b>{money(tx.total_payable_kobo)}</b>
+            </div>
+            <div className="small-note">
+              All monetary values are displayed from backend kobo amounts.
+            </div>
+          </section>
+          <SettlementVisibility settlement={tx.settlement} role={role} />
+          <section className="panel side-panel">
+            <h3>Next actions</h3>
+            {isBuyer && allowed.includes("pay") && (
+              <Button
+                disabled={busy}
+                onClick={async () => {
+                  await onAction(`/transactions/${tx.id}/payments`, {});
+                  await refresh();
+                }}
+                icon={Wallet}
+              >
+                Start payment
+              </Button>
+            )}
+            {isBuyer &&
+              tx.status === "AWAITING_PAYMENT" &&
+              !allowed.includes("pay") && (
+                <p className="muted">
+                  No payment action is currently available.
+                </p>
+              )}
+            {isSupplier && allowed.includes("send") && (
+              <Button disabled={busy} onClick={() => invoke("send", {})}>
+                Share agreement <ArrowRight size={16} />
+              </Button>
+            )}
+            {isSupplier && allowed.includes("dispatch") && (
+              <DispatchAction
+                tx={tx}
+                busy={busy}
+                invoke={invoke}
+                evidence={evidence}
+              />
+            )}
+            {isBuyer && allowed.includes("confirm_received") && (
+              <ReceiptAction tx={tx} busy={busy} invoke={invoke} />
+            )}
+            {isBuyer && allowed.includes("submit_decisions") && (
+              <DecisionAction
+                tx={tx}
+                busy={busy}
+                invoke={invoke}
+                onAction={onAction}
+                refresh={refresh}
+                evidence={evidence}
+              />
+            )}
+            {isBuyer && allowed.includes("open_return") && (
+              <Button
+                disabled={busy}
+                onClick={() =>
+                  invoke("returns", {
+                    lines: tx.lots
+                      .filter(
+                        (l) =>
+                          l.item_status === "REJECTED_AWAITING_RETURN" &&
+                          l.return_authorized,
+                      )
+                      .map((l) => ({
+                        lot_id: l.id,
+                        item_id: l.item_id,
+                        quantity: l.quantity,
+                      })),
+                  })
+                }
+              >
+                Open return
+              </Button>
+            )}
+            {isBuyer && allowed.includes("submit_handover_evidence") && (
+              <ReturnAction
+                tx={tx}
+                busy={busy}
+                onAction={onAction}
+                refresh={refresh}
+              />
+            )}
+            {isSupplier && allowed.includes("confirm_return_receipt") && (
+              <ReturnReceiptAction
+                tx={tx}
+                busy={busy}
+                onAction={onAction}
+                refresh={refresh}
+              />
+            )}
+            {isSupplier && allowed.includes("contest_return") && (
+              <ContestReturnAction
+                tx={tx}
+                busy={busy}
+                onAction={onAction}
+                refresh={refresh}
+              />
+            )}
+            {allowed.includes("raise_dispute") && (
+              <Button
+                variant="secondary"
+                disabled={busy}
+                onClick={() => {
+                  setForm({
+                    txId: tx.id,
+                    itemId: tx.items[0]?.id,
+                    quantity: 1,
+                    reasonCode: "SPEC_DISAGREEMENT",
+                  });
+                  setModal("dispute");
+                }}
+              >
+                <Shield size={16} /> Raise a dispute
+              </Button>
+            )}
+            {allowed.includes("add_review_evidence") && (
+              <ReviewEvidenceAction
+                tx={tx}
+                busy={busy}
+                onAction={onAction}
+                refresh={refresh}
+              />
+            )}
+            {allowed.includes("waive_window") && (
+              <WaiveWindowAction
+                tx={tx}
+                busy={busy}
+                onAction={onAction}
+                refresh={refresh}
+              />
+            )}
+            {allowed.includes("add_dispute_evidence") && (
+              <DisputeEvidenceAction
+                dispute={tx.dispute}
+                tx={tx}
+                busy={busy}
+                onAction={onAction}
+                refresh={refresh}
+              />
+            )}
+            {allowed.includes("waive_dispute_window") && (
+              <WaiveDisputeWindowAction
+                tx={tx}
+                busy={busy}
+                onAction={onAction}
+                refresh={refresh}
+              />
+            )}
+            {tx.payments?.length > 0 && (
+              <PaymentStatusNotice
+                payment={tx.payments.at(-1)}
+                tx={tx}
+                role={role}
+                invoke={invoke}
+                allowed={allowed}
+              />
+            )}
+            {!allowed.length && (
+              <p className="muted">
+                No actions are currently available for your role and this
+                transaction state.
+              </p>
+            )}
+          </section>
+          <div className="side-help">
+            <ShieldCheck size={18} />
+            <div>
+              <b>Remember</b>
+              <p>
+                SupplyKey does not arrange delivery. Keep your courier details
+                and evidence within the transaction record.
+              </p>
+            </div>
+          </div>
+        </aside>
+      </div>
+    </>
+  );
+}
+function SettlementVisibility({ settlement, role }) {
+  const rows = settlementRows(settlement, role);
+  if (!rows.length) return null;
+  return (
+    <section className="panel side-panel">
+      <h3>Settlement visibility</h3>
+      {rows.map(({ label, value }) => (
+        <div className="summary-line">
+          <span>{label}</span>
+          <b>
+            {typeof value === "number"
+              ? money(value)
+              : String(value).includes(" · ") || String(value).includes("; ")
+                ? String(value)
+                : titleCase(String(value))}
+          </b>
+        </div>
+      ))}
+      <div className="small-note">
+        Statuses reflect backend financial instructions; only provider-confirmed
+        success counts as settled.
+      </div>
+    </section>
+  );
+}
+function PaymentStatusNotice({ payment, tx, role, invoke, allowed }) {
+  const checkout = payment.checkout || {};
+  const isPaga = String(payment.mode || checkout.mode || "").startsWith(
+    "PAGA_",
+  );
+  const isBuyer = role === "BUYER";
+  const content = {
+    PENDING: isPaga
+      ? [
+          "Awaiting bank transfer",
+          "Transfer the exact amount to the Paga account below. SupplyKey will verify the callback and account balance.",
+        ]
+      : [
+          "Confirming payment",
+          "The provider attempt is pending. Funding has not been confirmed.",
+        ],
+    PAYMENT_RECEIVED: [
+      "Payment received, confirming secure holding",
+      "Collection is reported, but the backend has not confirmed secured funds.",
+    ],
+    UNKNOWN: [
+      "Payment outcome unknown",
+      "Do not retry or assume funds are secured. The backend must reconcile the ambiguous provider outcome.",
+    ],
+    FAILED: [
+      "Payment failed",
+      "The provider reported failure. The provider did not confirm a usable payment account.",
+    ],
+    EXPIRED: [
+      "Payment attempt expired",
+      "No funding is confirmed. Start another attempt only if the backend allows it.",
+    ],
+    FUNDS_SECURED: [
+      "Payment verified · funds secured",
+      "SupplyKey has verified the payment and secured the funds for this transaction.",
+    ],
+  }[payment.status] || ["Payment status", `Current status: ${payment.status}`];
+  return (
+    <div
+      className={`payment-pending ${payment.status === "UNKNOWN" ? "payment-unknown" : ""}`}
+    >
+      <Clock size={17} />
+      <div>
+        <b>{content[0]}</b>
+        <small>{content[1]}</small>
+        <small>
+          Provider status: {payment.status}
+          {payment.mode ? ` · ${payment.mode}` : ""}
+        </small>
+        {isBuyer &&
+          isPaga &&
+          checkout.account_number &&
+          payment.status === "PENDING" && (
+            <div className="paga-transfer-details">
+              <small>
+                Bank: <b>{checkout.bank_name || "Paga"}</b>
+              </small>
+              <small>
+                Account name: <b>{checkout.account_name || "SupplyKey"}</b>
+              </small>
+              <strong>{checkout.account_number}</strong>
+              <small>
+                Exact amount:{" "}
+                <b>
+                  {checkout.amount_naira
+                    ? `₦${checkout.amount_naira}`
+                    : money(checkout.amount_kobo)}
+                </b>
+              </small>
+              <button
+                type="button"
+                className="text-link"
+                onClick={() =>
+                  navigator.clipboard?.writeText(checkout.account_number)
+                }
+              >
+                Copy account number
+              </button>
+            </div>
+          )}
+        {payment.status === "PAYMENT_RECEIVED" &&
+          checkout.amount_received_kobo > 0 && (
+            <small>
+              Received: <b>{money(checkout.amount_received_kobo)}</b> ·
+              Remaining: <b>{money(checkout.remaining_kobo || 0)}</b>
+            </small>
+          )}
+        {isBuyer && tx.settlement?.excess_payment_refund_amount_kobo > 0 && (
+          <small>
+            Extra payment received:{" "}
+            <b>{money(tx.settlement.excess_payment_refund_amount_kobo)}</b>.
+            Refund status:{" "}
+            <b>{titleCase(tx.settlement.excess_payment_refund_status)}</b>.
+          </small>
+        )}
+        {checkout.instructions && <small>{checkout.instructions}</small>}
+        {allowed.includes("refresh_payment") &&
+          ["PENDING", "PAYMENT_RECEIVED", "UNKNOWN"].includes(
+            payment.status,
+          ) && (
+            <Button
+              variant="text"
+              onClick={() =>
+                invoke(`payments/${payment.payment_id}/refresh`, {})
+              }
+            >
+              Refresh status
+            </Button>
+          )}
+      </div>
+    </div>
+  );
+}
+function ReviewEvidenceAction({ tx, busy, onAction, refresh }) {
+  const decision = tx.decisions?.at(-1);
+  const [ids, setIds] = useState([]);
+  if (!decision?.id) return null;
+  return (
+    <div className="action-form">
+      <b>Add review evidence</b>
+      <EvidenceInline
+        purpose={
+          tx.evidence_requests?.some(
+            (r) => r.party === tx.current_party_role && r.status === "OPEN",
+          )
+            ? "EVIDENCE_REQUEST_RESPONSE"
+            : "OTHER"
+        }
+        txId={tx.id}
+        onUploaded={setIds}
+      />
+      <Button
+        disabled={
+          busy ||
+          !ids.length ||
+          (decision.evidence_window?.status !== "OPEN" &&
+            !tx.evidence_requests?.some((r) => r.status === "OPEN"))
+        }
+        onClick={async () => {
+          await onAction(`/decisions/${decision.id}/evidence`, {
+            evidence_ids: ids,
+          });
+          await refresh();
+        }}
+      >
+        Submit review evidence
+      </Button>
+    </div>
+  );
+}
+function WaiveWindowAction({ tx, busy, onAction, refresh }) {
+  const decision = tx.decisions?.at(-1);
+  if (!decision?.id) return null;
+  return (
+    <Button
+      variant="secondary"
+      disabled={busy || decision.evidence_window?.status !== "OPEN"}
+      onClick={async () => {
+        await onAction(`/decisions/${decision.id}/waive-window`, {});
+        await refresh();
+      }}
+    >
+      Waive evidence window
+    </Button>
+  );
+}
+function WaiveDisputeWindowAction({ tx, busy, onAction, refresh }) {
+  return (
+    <Button
+      variant="secondary"
+      disabled={busy || tx.dispute?.status !== "EVIDENCE_WINDOW_OPEN"}
+      onClick={async () => {
+        await onAction(`/disputes/${tx.dispute.id}/waive-window`, {});
+        await refresh();
+      }}
+    >
+      Waive dispute evidence window
+    </Button>
+  );
+}
+function DisputeEvidenceAction({ dispute, tx, busy, onAction, refresh }) {
+  const [ids, setIds] = useState([]),
+    [statement, setStatement] = useState("");
+  if (!dispute?.id) return null;
+  return (
+    <div className="action-form">
+      <b>Add dispute evidence</b>
+      <Field label="Statement (optional)">
+        <textarea
+          value={statement}
+          onChange={(e) => setStatement(e.target.value)}
+          placeholder="Explain what this evidence supports."
+        />
+      </Field>
+      <EvidenceInline purpose="DISPUTE" txId={tx.id} onUploaded={setIds} />
+      <Button
+        disabled={busy || (!ids.length && !statement.trim())}
+        onClick={async () => {
+          await onAction(`/disputes/${dispute.id}/evidence`, {
+            kind: statement ? "STATEMENT" : "STATEMENT",
+            statement,
+            evidence_ids: ids,
+          });
+          await refresh();
+        }}
+      >
+        Submit dispute evidence
+      </Button>
+    </div>
+  );
+}
+function Timeline({ status }) {
+  const steps = [
+    "AWAITING_BUYER_AGREEMENT",
+    "AWAITING_PAYMENT",
+    "FUNDED",
+    "DISPUTED",
+    "SETTLEMENT_PENDING",
+    "COMPLETED",
+  ];
+  const idx = steps.indexOf(status);
+  return (
+    <div className="timeline">
+      {steps.map((s, i) => (
+        <div
+          className={`timeline-step ${i < idx ? "done" : ""} ${i === idx ? "current" : ""}`}
+        >
+          <div className="timeline-marker">
+            {i < idx ? <Check size={13} /> : i + 1}
+          </div>
+          <span>{titleCase(s)}</span>
+        </div>
+      ))}
+    </div>
+  );
+}
+function DeliveryPhotoAction({ txId, requirement, busy, onAction, refresh }) {
+  const [uploading, setUploading] = useState(false),
+    [error, setError] = useState(""),
+    [done, setDone] = useState(false);
+  const submitFiles = async (files) => {
+    if (!files.length) return;
+    setUploading(true);
+    setError("");
+    setDone(false);
+    try {
+      const ids = [];
+      for (const file of files) {
+        const uploaded = await api.upload(file, "DELIVERY_PHOTO", txId);
+        const id = uploaded?.id || uploaded?.evidence_id;
+        if (!id)
+          throw new Error("The server did not confirm the photograph upload.");
+        ids.push(id);
+      }
+      await onAction(`/transactions/${txId}/delivery/evidence`, {
+        requirement_id: requirement.id,
+        evidence_ids: ids,
+        note: "Delivery photographs submitted.",
+      });
+      await refresh();
+      setDone(true);
+    } catch (e) {
+      setError(
+        e?.data?.error?.message ||
+          e.message ||
+          "Could not submit delivery photographs.",
+      );
+    } finally {
+      setUploading(false);
+    }
+  };
+  return (
+    <div className="delivery-photo-action">
+      <label className="field">
+        <span>Delivery photographs</span>
+        <input
+          type="file"
+          multiple
+          accept="image/jpeg,image/png,image/heic"
+          disabled={busy || uploading}
+          onChange={(e) => {
+            const files = [...e.target.files];
+            e.target.value = "";
+            void submitFiles(files);
+          }}
+        />
+      </label>
+      {uploading && (
+        <small>Uploading, verifying and submitting photographs…</small>
+      )}
+      {done && <small>Photographs submitted successfully.</small>}
+      {error && (
+        <div className="alert error" role="alert">
+          {error}
+        </div>
+      )}
+    </div>
+  );
+}
+function EvidencePicker({ files, setFiles }) {
+  return (
+    <label className="upload-zone">
+      <input
+        type="file"
+        multiple
+        accept="image/jpeg,image/png,image/heic,application/pdf,video/mp4"
+        onChange={(e) => setFiles([...e.target.files])}
+      />
+      <div>
+        <Upload size={22} />
+        <b>Choose evidence files</b>
+        <span>JPEG, PNG, HEIC, PDF or MP4 · configured limits apply</span>
+      </div>
+      {files.length > 0 && <small>{files.map((f) => f.name).join(", ")}</small>}
+    </label>
+  );
+}
+function DispatchAction({ tx, busy, invoke }) {
+  const [itemId, setItemId] = useState(tx.items[0]?.id || ""),
+    [qty, setQty] = useState(1),
+    [courier, setCourier] = useState(""),
+    [rider, setRider] = useState(""),
+    [phone, setPhone] = useState(""),
+    [tracking, setTracking] = useState(""),
+    [ids, setIds] = useState([]),
+    [submitting, setSubmitting] = useState(false),
+    [submitError, setSubmitError] = useState("");
+  const item = tx.items.find((i) => i.id === itemId) || tx.items[0];
+  const available = (tx.lots || [])
+    .filter(
+      (l) => l.item_id === itemId && l.item_status === "AWAITING_DISPATCH",
+    )
+    .reduce((s, l) => s + l.quantity, 0);
+  const canSubmit =
+    !!item &&
+    ids.length > 0 &&
+    ids.every((id) => typeof id === "string" && id.length > 0) &&
+    !!courier.trim() &&
+    !!rider.trim() &&
+    !!phone.trim() &&
+    Number.isInteger(Number(qty)) &&
+    Number(qty) >= 1 &&
+    available > 0 &&
+    Number(qty) <= available &&
+    !busy &&
+    !submitting;
+  const submit = async () => {
+    if (!canSubmit) return;
+    setSubmitting(true);
+    setSubmitError("");
+    try {
+      await invoke("dispatch", {
+        lines: [{ item_id: item.id, quantity: Number(qty) }],
+        courier_name: courier.trim(),
+        rider_name: rider.trim(),
+        rider_phone: phone.trim(),
+        tracking_ref: tracking.trim(),
+        evidence_ids: ids,
+      });
+    } catch (e) {
+      setSubmitError(
+        e?.data?.error?.message ||
+          e.message ||
+          "Dispatch could not be submitted. Please try again.",
+      );
+    } finally {
+      setSubmitting(false);
+    }
+  };
+  return (
+    <div className="action-form">
+      <b>Dispatch goods</b>
+      <p>
+        Declare the quantity being dispatched and provide dispatch evidence.
+      </p>
+      <Field label="Item">
+        <select
+          value={itemId}
+          onChange={(e) => {
+            setItemId(e.target.value);
+            setQty(1);
+          }}
+        >
+          {tx.items.map((i) => (
+            <option value={i.id}>{i.description}</option>
+          ))}
+        </select>
+      </Field>
+      <Field label="Quantity">
+        <input
+          type="number"
+          min="1"
+          max={available}
+          value={qty}
+          onChange={(e) => setQty(e.target.value)}
+        />
+      </Field>
+      <Field label="Courier">
+        <input
+          value={courier}
+          onChange={(e) => setCourier(e.target.value)}
+          placeholder="Courier company"
+        />
+      </Field>
+      <Field label="Rider name">
+        <input value={rider} onChange={(e) => setRider(e.target.value)} />
+      </Field>
+      <Field label="Rider phone">
+        <input value={phone} onChange={(e) => setPhone(e.target.value)} />
+      </Field>
+      <Field label="Tracking reference">
+        <input value={tracking} onChange={(e) => setTracking(e.target.value)} />
+      </Field>
+      <p className="muted">
+        Select a dispatch photo or document. SupplyKey uploads and verifies it
+        before enabling submission.
+      </p>
+      <EvidenceInline
+        purpose="DISPATCH_PROOF"
+        txId={tx.id}
+        onUploaded={setIds}
+        autoUploadOnSelect
+      />
+      {ids.length > 0 && (
+        <small>{ids.length} verified evidence file(s) attached.</small>
+      )}
+      {submitError && (
+        <div className="alert error" role="alert">
+          {submitError}
+        </div>
+      )}
+      <Button disabled={!canSubmit} onClick={submit}>
+        {submitting ? "Submitting dispatch…" : "Submit dispatch"}
+      </Button>
+    </div>
+  );
+}
+function ReceiptAction({ tx, busy, invoke }) {
+  const dispatched =
+    tx.lots?.filter((l) => l.item_status === "DISPATCHED") || [];
+  const items = tx.items || [];
+  const eligibleIds = [
+    ...new Set(dispatched.map((l) => l.item_id).filter(Boolean)),
+  ];
+  const eligibleItems = eligibleIds
+    .map((id) => items.find((i) => i.id === id))
+    .filter((i) => i && String(i.description || i.name || "").trim());
+  const [itemId, setItemId] = useState(eligibleIds[0] || "");
+  const [quantity, setQuantity] = useState(1);
+  const [submitting, setSubmitting] = useState(false);
+  const [submitError, setSubmitError] = useState("");
+  const available = dispatched
+    .filter((l) => l.item_id === itemId)
+    .reduce((s, l) => s + Number(l.quantity || 0), 0);
+  const item = eligibleItems.find((i) => i.id === itemId);
+  useEffect(() => {
+    if (!eligibleIds.includes(itemId)) setItemId(eligibleIds[0] || "");
+  }, [eligibleIds.join("|"), itemId]);
+  useEffect(() => {
+    setQuantity(available || 1);
+    setSubmitError("");
+  }, [itemId, available]);
+  const canSubmit =
+    !!itemId &&
+    !!item &&
+    available > 0 &&
+    Number.isInteger(Number(quantity)) &&
+    Number(quantity) >= 1 &&
+    Number(quantity) <= available &&
+    !busy &&
+    !submitting;
+  const submit = async () => {
+    if (!canSubmit) return;
+    setSubmitting(true);
+    setSubmitError("");
+    try {
+      await invoke("delivery/confirm-received", {
+        lines: [{ item_id: itemId, quantity: Number(quantity) }],
+      });
+    } catch (e) {
+      setSubmitError(
+        e?.data?.error?.message || e.message || "Receipt confirmation failed.",
+      );
+    } finally {
+      setSubmitting(false);
+    }
+  };
+  return (
+    <div className="action-form">
+      <b>Confirm physical receipt</b>
+      <p>
+        Confirm only goods you have physically received. Photographs are
+        submitted separately.
+      </p>
+      {eligibleItems.length > 0 ? (
+        <>
+          <Field label="Item">
+            <select value={itemId} onChange={(e) => setItemId(e.target.value)}>
+              {eligibleItems.map((i) => (
+                <option key={i.id} value={i.id}>
+                  {i.description || i.name}
+                </option>
+              ))}
+            </select>
+          </Field>
+          <Field label="Quantity received">
+            <input
+              type="number"
+              min="1"
+              max={available}
+              value={quantity}
+              onChange={(e) => setQuantity(e.target.value)}
+            />
+          </Field>
+          <small className="muted">
+            Available for receipt: {available} unit(s).
+          </small>
+        </>
+      ) : (
+        <div className="notice">
+          {eligibleIds.length
+            ? "Dispatched goods were found, but their item descriptions are missing from this transaction. Receipt confirmation is blocked until the transaction data is corrected."
+            : "There are no dispatched quantities awaiting receipt confirmation yet. The supplier must submit dispatch first."}
+        </div>
+      )}
+      {submitError && (
+        <div className="alert error" role="alert">
+          {submitError}
+        </div>
+      )}
+      <Button disabled={!canSubmit} onClick={submit}>
+        {submitting ? "Confirming receipt…" : "Confirm receipt"}{" "}
+        <Check size={15} />
+      </Button>
+    </div>
+  );
+}
+function EvidenceInline({
+  purpose,
+  txId,
+  onUploaded,
+  autoUploadOnSelect = false,
+}) {
+  const [files, setFiles] = useState([]),
+    [busy, setBusy] = useState(false),
+    [error, setError] = useState("");
+  const upload = async (selected = files) => {
+    if (selected.length > 20) {
+      setError("A single submission can include at most 20 files.");
+      return;
+    }
+    if (!selected.length) return;
+    setBusy(true);
+    setError("");
+    try {
+      const ids = [];
+      for (const f of selected) {
+        const uploaded = await api.upload(f, purpose, txId);
+        const id = uploaded?.id || uploaded?.evidence_id;
+        if (!id)
+          throw new Error(
+            "The server did not confirm the evidence upload. Please select the file again.",
+          );
+        ids.push(id);
+      }
+      onUploaded(ids);
+      setError(`${ids.length} file(s) verified`);
+    } catch (e) {
+      onUploaded([]);
+      setError(e.message);
+    } finally {
+      setBusy(false);
+    }
+  };
+  const onFilesSelected = (e) => {
+    const selected = [...e.target.files];
+    setFiles(selected);
+    if (autoUploadOnSelect) void upload(selected);
+  };
+  return (
+    <div className="inline-upload">
+      <input
+        type="file"
+        multiple
+        accept="image/*,application/pdf,video/mp4"
+        disabled={busy}
+        onChange={onFilesSelected}
+      />
+      {!autoUploadOnSelect && (
+        <button
+          type="button"
+          className="text-link"
+          disabled={!files.length || busy}
+          onClick={() => upload()}
+        >
+          <Upload size={14} /> {busy ? "Uploading…" : "Upload evidence"}
+        </button>
+      )}
+      {busy && <small>Uploading and verifying evidence…</small>}
+      {error && <small>{error}</small>}
+    </div>
+  );
+}
+function DecisionAction({ tx, busy, invoke, onAction, refresh }) {
+  const receiptLots =
+    tx.lots?.filter((l) => l.item_status === "RECEIPT_CONFIRMED") || [];
+  const items = tx.items || [];
+  const eligibleIds = [
+    ...new Set(receiptLots.map((l) => l.item_id).filter(Boolean)),
+  ];
+  const eligibleItems = eligibleIds.map(
+    (id) =>
+      items.find((i) => i.id === id) || { id, description: id, conditions: [] },
+  );
+  const buyerPhotoSubmitted = tx.delivery_photo_requirements?.some(
+    (r) =>
+      r.party_role === "BUYER" &&
+      ["SUBMITTED", "SUBMITTED_LATE"].includes(r.status),
+  );
+  const buyerPhotoRequirement = tx.delivery_photo_requirements?.find(
+    (r) =>
+      r.party_role === "BUYER" && ["PENDING", "OVERDUE"].includes(r.status),
+  );
+  const [itemId, setItemId] = useState(eligibleIds[0] || "");
+  const item = eligibleItems.find((i) => i.id === itemId);
+  const total = receiptLots
+    .filter((l) => l.item_id === itemId)
+    .reduce((sum, l) => sum + Number(l.quantity || 0), 0);
+  const [accepted, setAccepted] = useState(total),
+    [rejected, setRejected] = useState(0),
+    [acceptedIds, setAcceptedIds] = useState([]),
+    [rejectedIds, setRejectedIds] = useState([]),
+    [reason, setReason] = useState(""),
+    [condition, setCondition] = useState("");
+  const [submitting, setSubmitting] = useState(false),
+    [submitError, setSubmitError] = useState("");
+  useEffect(() => {
+    if (!eligibleIds.includes(itemId)) setItemId(eligibleIds[0] || "");
+  }, [eligibleIds.join("|"), itemId]);
+  useEffect(() => {
+    setAccepted(total);
+    setRejected(0);
+    setAcceptedIds([]);
+    setRejectedIds([]);
+    setReason("");
+    setCondition(
+      item?.conditions?.find((c) => c.kind === "REJECTION")?.id || "",
+    );
+    setSubmitError("");
+  }, [itemId, total]);
+  const valid =
+    !!itemId &&
+    !!item &&
+    !!buyerPhotoSubmitted &&
+    Number.isInteger(Number(accepted)) &&
+    Number.isInteger(Number(rejected)) &&
+    accepted >= 0 &&
+    rejected >= 0 &&
+    accepted + rejected > 0 &&
+    accepted + rejected <= total &&
+    (accepted === 0 || acceptedIds.length > 0) &&
+    (rejected === 0 || rejectedIds.length > 0) &&
+    (rejected === 0 || reason.trim().length >= 10) &&
+    (rejected === 0 || !!condition);
+  const submit = async () => {
+    if (!valid || busy || submitting) return;
+    setSubmitting(true);
+    setSubmitError("");
+    try {
+      await invoke("decisions", {
+        lines: [
+          {
+            item_id: itemId,
+            quantity_submitted: Number(accepted) + Number(rejected),
+            quantity_accepted: Number(accepted),
+            quantity_rejected: Number(rejected),
+            accept_evidence_ids: acceptedIds,
+            reject:
+              Number(rejected) > 0
+                ? {
+                    agreed_condition_ids: [condition],
+                    reason_text: reason,
+                    evidence_ids: rejectedIds,
+                  }
+                : undefined,
+          },
+        ],
+      });
+    } catch (e) {
+      setSubmitError(
+        e?.data?.error?.message ||
+          e.message ||
+          "Your decision could not be submitted.",
+      );
+    } finally {
+      setSubmitting(false);
+    }
+  };
+  return (
+    <div className="action-form">
+      <b>Review received goods</b>
+      <p>
+        Submit per-quantity acceptance and rejection. Accepted quantities still
+        require moderator review; rejected quantities remain held pending
+        return.
+      </p>
+      {!buyerPhotoSubmitted && (
+        <div className="notice">
+          <CameraIcon /> Submit the buyer delivery photographs first. Select a
+          photograph below. SupplyKey will upload it, verify it and submit it to
+          this transaction automatically.
+        </div>
+      )}
+      {!buyerPhotoSubmitted && buyerPhotoRequirement && (
+        <DeliveryPhotoAction
+          txId={tx.id}
+          requirement={buyerPhotoRequirement}
+          busy={busy}
+          onAction={onAction}
+          refresh={refresh}
+        />
+      )}
+      {eligibleItems.length > 0 ? (
+        <>
+          <Field label="Item">
+            <select value={itemId} onChange={(e) => setItemId(e.target.value)}>
+              {eligibleItems.map((i) => (
+                <option key={i.id} value={i.id}>
+                  {i.description || i.name}
+                </option>
+              ))}
+            </select>
+          </Field>
+          <Field label="Quantity accepted">
+            <input
+              type="number"
+              min="0"
+              max={total}
+              value={accepted}
+              onChange={(e) => setAccepted(Number(e.target.value))}
+            />
+          </Field>
+          <Field label="Quantity rejected">
+            <input
+              type="number"
+              min="0"
+              max={total}
+              value={rejected}
+              onChange={(e) => setRejected(Number(e.target.value))}
+            />
+          </Field>
+          <small className="muted">
+            Total available: {total} unit(s). Accepted plus rejected quantities
+            cannot exceed this amount.
+          </small>
+          {accepted > 0 && (
+            <>
+              <b className="mini-label">Acceptance proof</b>
+              <EvidenceInline
+                purpose="ACCEPTANCE_PROOF"
+                txId={tx.id}
+                onUploaded={setAcceptedIds}
+              />
+            </>
+          )}
+          {rejected > 0 && (
+            <>
+              <b className="mini-label">Rejection details</b>
+              <Field label="Agreed condition not met">
+                <select
+                  value={condition}
+                  onChange={(e) => setCondition(e.target.value)}
+                >
+                  <option value="">Select the unmet agreed condition</option>
+                  {(item?.conditions || [])
+                    .filter((c) => c.kind === "REJECTION")
+                    .map((c) => (
+                      <option key={c.id} value={c.id}>
+                        {c.text}
+                      </option>
+                    ))}
+                </select>
+              </Field>
+              <Field label="Reason">
+                <textarea
+                  value={reason}
+                  onChange={(e) => setReason(e.target.value)}
+                  placeholder="Explain how the goods differ from the agreement"
+                />
+              </Field>
+              <EvidenceInline
+                purpose="REJECTION_PROOF"
+                txId={tx.id}
+                onUploaded={setRejectedIds}
+              />
+            </>
+          )}
+        </>
+      ) : (
+        <div className="notice">
+          No received quantities are available for review. Confirm physical
+          receipt first.
+        </div>
+      )}
+      {submitError && (
+        <div className="alert error" role="alert">
+          {submitError}
+        </div>
+      )}
+      <Button disabled={busy || submitting || !valid} onClick={submit}>
+        {submitting ? "Submitting for review…" : "Submit for review"}
+      </Button>
+    </div>
+  );
+}
+function ReturnAction({ tx, busy, onAction, refresh }) {
+  const [ids, setIds] = useState([]),
+    [courier, setCourier] = useState(""),
+    [rider, setRider] = useState(""),
+    [phone, setPhone] = useState(""),
+    [tracking, setTracking] = useState(""),
+    [note, setNote] = useState("");
+  const path = tx.return_id ? `/returns/${tx.return_id}/handover-evidence` : "";
+  return (
+    <div className="action-form">
+      <b>Return handover</b>
+      <p>
+        The 72-hour supplier confirmation window starts when validated evidence
+        is committed by the server.
+      </p>
+      <Field label="Courier">
+        <input value={courier} onChange={(e) => setCourier(e.target.value)} />
+      </Field>
+      <Field label="Rider name">
+        <input value={rider} onChange={(e) => setRider(e.target.value)} />
+      </Field>
+      <Field label="Rider phone">
+        <input value={phone} onChange={(e) => setPhone(e.target.value)} />
+      </Field>
+      <Field label="Tracking reference">
+        <input value={tracking} onChange={(e) => setTracking(e.target.value)} />
+      </Field>
+      <Field label="Handover note">
+        <textarea value={note} onChange={(e) => setNote(e.target.value)} />
+      </Field>
+      <EvidenceInline
+        purpose="RETURN_HANDOVER"
+        txId={tx.id}
+        onUploaded={setIds}
+      />
+      <Button
+        disabled={busy || !path || !ids.length || !courier || !rider || !phone}
+        onClick={async () => {
+          await onAction(path, {
+            evidence_ids: ids,
+            courier_name: courier,
+            rider_name: rider,
+            rider_phone: phone,
+            tracking_ref: tracking,
+            note,
+          });
+          await refresh();
+        }}
+      >
+        Submit handover evidence
+      </Button>
+    </div>
+  );
+}
+function ReturnReceiptAction({ tx, busy, onAction, refresh }) {
+  const returnLots =
+    tx.lots?.filter((l) => l.item_status === "RETURN_HANDOVER_RECORDED") || [];
+  const [ids, setIds] = useState([]);
+  const path = tx.return_id ? `/returns/${tx.return_id}/confirm-receipt` : "";
+  const submit = async () => {
+    await onAction(path, {
+      lines: returnLots.map((l) => ({
+        lot_id: l.id,
+        item_id: l.item_id,
+        quantity_received: l.quantity,
+      })),
+      evidence_ids: ids,
+      note: "Supplier confirms receipt of all returned goods.",
+    });
+    await refresh();
+  };
+  return (
+    <div className="action-form">
+      <b>Confirm receipt of returned goods</b>
+      <p>
+        Confirming receipt is separate from the buyer's handover evidence.
+        Confirm every authorized returned quantity and attach evidence of
+        physical receipt.
+      </p>
+      {returnLots.map((l) => (
+        <div className="summary-line">
+          <span>
+            {tx.items.find((i) => i.id === l.item_id)?.description ||
+              "Returned item"}
+          </span>
+          <b>{l.quantity} unit(s)</b>
+        </div>
+      ))}
+      <EvidenceInline
+        purpose="RETURN_RECEIPT"
+        txId={tx.id}
+        onUploaded={setIds}
+      />
+      <Button
+        disabled={busy || !path || !ids.length || !returnLots.length}
+        onClick={submit}
+      >
+        Confirm receipt of returned goods
+      </Button>
+    </div>
+  );
+}
 
-function ContestReturnAction({tx,busy,onAction,refresh}){const[reason,setReason]=useState('NOT_RECEIVED'),[note,setNote]=useState(''),[ids,setIds]=useState([]);return <div className="action-form"><b>Contest return</b><Field label="Reason"><select value={reason} onChange={e=>setReason(e.target.value)}><option>WRONG_ITEM</option><option>DAMAGED</option><option>QUANTITY_MISMATCH</option><option>NOT_RECEIVED</option></select></Field><Field label="Details"><textarea value={note} onChange={e=>setNote(e.target.value)} placeholder="Explain the return discrepancy."/></Field><EvidenceInline purpose="DISPUTE" txId={tx.id} onUploaded={setIds}/><Button disabled={busy||!tx.return_id||!note.trim()||!ids.length} onClick={async()=>{await onAction(`/returns/${tx.return_id}/contest`,{lines:[{item_id:tx.lots?.find(l=>l.item_status==='RETURN_HANDOVER_RECORDED')?.item_id||tx.items[0].id,quantity:tx.lots?.filter(l=>l.item_status==='RETURN_HANDOVER_RECORDED').reduce((s,l)=>s+l.quantity,0)||tx.items[0].quantity,reason_code:reason}],note,evidence_ids:ids});await refresh()}}>Submit contest</Button></div>}
-function CameraIcon(){return <Upload size={18}/>}
-function Modal({name,onClose,form,setForm,role,busy,onSubmit,onRole,onLogout,onMfa,onWorkspace,onAction,onDispute,notifications,setNotifications}){return <div className="modal-backdrop" onMouseDown={e=>e.target===e.currentTarget&&onClose()}><div className="modal"><div className="modal-head"><h3>{name==='case'?'Review case':name==='dispute'?'Raise a dispute':name==='account'?'Account & workspace':name==='help'?'SupplyKey help':name==='notifications'?'Notifications':name==='mfa'?'Verify your identity':name==='deliveryEvidence'?'Upload delivery photographs':name==='returnReceipt'?'Confirm returned goods':'Details'}</h3><button className="icon-btn" onClick={onClose}><X/></button></div>
- {name==='case'&&<form onSubmit={onSubmit} className="modal-body"><div className="case-summary"><span className="eyebrow">{form.case?.reference}</span><h2>{form.case?.item}</h2><Badge>{form.case?.status}</Badge><p>{form.case?.reason}</p><div className="summary-line"><span>Buyer</span><b>{form.case?.buyer}</b></div><div className="summary-line"><span>Supplier</span><b>{form.case?.supplier}</b></div><div className="summary-line"><span>Amount</span><b>{money(form.case?.amount_kobo)}</b></div><div className="summary-line"><span>Buyer delivery photos</span><Badge>{form.case?.buyer_photos}</Badge></div><div className="summary-line"><span>Supplier delivery photos</span><Badge>{form.case?.supplier_photos}</Badge></div></div>{form.settlement&&<SettlementVisibility settlement={form.settlement.settlement} role={role}/ >}{form.detailLoading&&<div className="notice"><Clock size={16}/> Loading the complete case file…</div>}{form.detailError&&<div className="alert error" role="alert">{form.detailError}</div>}{form.submitError&&<div className="alert error" role="alert">{form.submitError}</div>}{form.detail&&<div className="case-detail">{form.detail.transaction&&<><b>Transaction and agreed items</b><p className="muted">{form.detail.transaction.reference} · Buyer: {form.detail.transaction.buyer} · Supplier: {form.detail.transaction.supplier}</p>{form.detail.transaction.items?.map(i=><div className="case-evidence"><div><b>{i.description}</b><small>{i.specification} · {i.condition} · Quantity {i.quantity}</small>{i.conditions?.map(c=><small>{c.kind}: {c.text}</small>)}</div></div>)}{form.detail.transaction.returns?.length>0&&<><b>Physical return verification</b>{form.detail.transaction.returns.map(r=><div className="case-note"><b>Return {r.id} · {r.status}</b><small>Buyer handover: {r.handover_committed_at?dateTime(r.handover_committed_at):'Not submitted'} · Supplier receipt: {r.supplier_receipt_confirmed_at?dateTime(r.supplier_receipt_confirmed_at):'Not confirmed'}</small><small>Refund eligibility: {r.refund_eligibility_status||'Awaiting return receipt'}</small>{r.refund_authorization_rejected&&<small>Moderator authorization declined: {r.refund_authorization_rejection_reason}</small>}</div>)}</>}</>}<b>Evidence submitted</b>{form.detail.evidence?.length?form.detail.evidence.map(ev=><div className="case-evidence"><div><b>{ev.name||ev.id}</b><small>{ev.purpose} · {ev.status} · {ev.mime_type||'File metadata unavailable'} · {ev.size_bytes?Math.round(ev.size_bytes/1024)+' KB':''}</small>{ev.flags?.length>0&&<Badge>Flagged: {ev.flags.join(', ')}</Badge>}<label className="terms-check evidence-considered"><input type="checkbox" disabled={ev.status!=='VERIFIED'} checked={(form.evidenceIdsConsidered||[]).includes(ev.id)} onChange={e=>setForm({...form,evidenceIdsConsidered:e.target.checked?[...(form.evidenceIdsConsidered||[]),ev.id]:(form.evidenceIdsConsidered||[]).filter(id=>id!==ev.id)})}/> Include in evidence considered</label><EvidencePreview evidence={ev}/></div><Button variant="secondary" onClick={async()=>{try{await onAction(`/mod/evidence/${ev.id}/flag`,{reason:form.flagReason||'Flagged for moderator review.'});setForm(current=>({...current,flaggedEvidence:ev.id,submitError:''}));}catch(err){setForm(current=>({...current,submitError:err?.data?.error?.message||err.message||'Evidence flagging failed.'}));}}}>Flag evidence</Button></div>):<p className="muted">No evidence metadata was returned in this case file.</p>}<b>Case timeline</b>{form.detail.timeline?.length?<ActivityFeed items={form.detail.timeline}/>:<p className="muted">No case events returned.</p>}{form.detail.dispute?.decision_deadline_at&&<div className={form.detail.dispute.decision_overdue?'alert error':'notice'}>72-hour decision deadline: {dateTime(form.detail.dispute.decision_deadline_at)}{form.detail.dispute.decision_overdue?' · OVERDUE — escalated, no automatic financial action.':''}</div>}{form.detail.evidence_requests?.length>0&&<><b>Evidence requests</b>{form.detail.evidence_requests.map(r=><p className="case-note">{r.party}: {r.question}<small>{r.status} · Due {dateTime(r.due_at)}</small></p>)}</>}{form.detail.notes?.length>0&&<><b>Internal notes</b>{form.detail.notes.map(n=><p className="case-note">{n.text}<small>{n.actor} · {dateTime(n.at)}</small></p>)}</>}</div>}<Field label="Moderator action"><select value={form.caseAction||(form.case?.status==='SUBMITTED_FOR_REVIEW'?'confirm':'decision')} onChange={e=>setForm({...form,caseAction:e.target.value,submitError:''})}>{form.case?.status==='SUBMITTED_FOR_REVIEW'?<><option value="confirm">Confirm acceptance</option><option value="request">Request additional evidence</option><option value="dispute">Open dispute</option><option value="extend">Extend evidence window</option></>:<><option value="decision">Record dispute decision</option>{form.detail?.transaction?.returns?.some(r=>r.status==='RECEIPT_CONFIRMED'&&['PENDING_APPROVAL','AWAITING_VERIFIED_BENEFICIARY'].includes(r.refund_eligibility_status))&&<option value="authorize_refund">Authorize refund after beneficiary verification</option>}{form.settlement?.settlement?.refunds?.some(r=>r.status==='FAILED'&&r.refund_classification==='DISPUTE_RETURN')&&<option value="retry_refund">Retry failed dispute refund</option>}<option value="request">Request additional evidence</option><option value="extend">Extend evidence window</option><option value="note">Add internal note</option><option value="assign">Assign case</option><option value="hold">Place on hold</option><option value="resume">Resume review</option></>}</select></Field>{form.case?.status==='SUBMITTED_FOR_REVIEW'&&form.caseAction==='confirm'&&form.case?.supplier_photos==='OVERDUE'&&<><div className="notice"><AlertTriangle size={16}/> Supplier delivery photographs are overdue. Confirmation requires an audited acknowledgement.</div><label className="terms-check"><input type="checkbox" checked={!!form.acknowledgeMissingSupplierPhotos} onChange={e=>setForm({...form,acknowledgeMissingSupplierPhotos:e.target.checked})}/> Acknowledge missing supplier delivery photographs</label><Field label="Acknowledgement reason"><textarea required value={form.acknowledgementReason||''} onChange={e=>setForm({...form,acknowledgementReason:e.target.value})}/></Field></>}{form.case?.status==='SUBMITTED_FOR_REVIEW'&&form.caseAction==='confirm'&&form.case?.supplier_photos==='PENDING'&&<div className="alert error"><Clock size={16}/> Confirmation is blocked until supplier delivery photographs are submitted.</div>}{form.case?.status==='SUBMITTED_FOR_REVIEW'&&form.caseAction==='confirm'&&form.case?.window_status==='OPEN'&&<div className="alert error"><Clock size={16}/> Confirmation is blocked until the evidence window closes or both parties waive it.</div>}{form.case?.status!=='SUBMITTED_FOR_REVIEW'&&form.caseAction==='decision'&&<><Field label="Decision outcome"><select value={form.outcome||'NO_FINANCIAL_ACTION'} onChange={e=>setForm({...form,outcome:e.target.value})}><option value="RELEASE">Release allocated quantity</option><option value="REFUND">Refund allocated quantity (no return required)</option><option value="RETURN_AND_REFUND">Require return, then refund after supplier receipt</option><option value="NO_FINANCIAL_ACTION">No financial action</option>{(form.detail?.consent_statement_ids||form.detail?.dispute?.consent_statement_ids||form.case?.consent_statement_ids||[]).length>=2&&<option value="REDISPATCH_OR_REPLACEMENT">Redispatch / replacement (both consents recorded)</option>}</select></Field><Field label="Affected quantity (all frozen lots)"><input type="number" value={form.case?.affected_lots?.reduce((n,l)=>n+l.quantity,0)||form.case?.quantity||1} readOnly/></Field>{form.outcome==='RETURN_AND_REFUND'&&<div className="notice">Refund eligibility remains blocked until the buyer submits return handover evidence and the supplier confirms receipt. One authorized moderator must authorize the refund after receipt is confirmed.</div>}{form.outcome==='REDISPATCH_OR_REPLACEMENT'&&<Field label="New dispatch deadline"><input type="datetime-local" required value={form.newDispatchDeadlineAt||''} onChange={e=>setForm({...form,newDispatchDeadlineAt:e.target.value})}/></Field>}</>}{form.caseAction==='authorize_refund'&&<div className="notice">Supplier receipt has been persisted. Verify that the buyer's Paga beneficiary is active, then authorize the immutable refund instruction. This action authorizes the refund; provider confirmation is still required before completion.</div>}{form.caseAction==='retry_refund'&&<><Field label="Failed dispute refund"><select value={form.refundInstructionId||''} onChange={e=>setForm({...form,refundInstructionId:e.target.value})}><option value="">Select failed refund</option>{(form.settlement?.settlement?.refunds||[]).filter(r=>r.status==='FAILED'&&r.refund_classification==='DISPUTE_RETURN').map(r=><option value={r.id}>{r.id} · {money(r.amount_kobo)}</option>)}</select></Field><div className="notice">Only a definitive provider failure can be retried. Unknown outcomes must be reconciled first.</div></>}{form.caseAction==='note'&&<Field label="Internal note"><textarea required minLength="10" value={form.internalNote||''} onChange={e=>setForm({...form,internalNote:e.target.value})}/></Field>}{form.caseAction==='retry_refund'&&<Field label="Retry reason"><textarea required minLength="10" value={form.reason||''} onChange={e=>setForm({...form,reason:e.target.value})}/></Field>}{form.caseAction==='assign'&&<Field label="Moderator ID (optional; blank assigns to you)"><input value={form.assignee||''} onChange={e=>setForm({...form,assignee:e.target.value})}/></Field>}{form.caseAction==='extend'&&<Field label="Additional hours"><input type="number" min="1" max="120" value={form.extraHours||24} onChange={e=>setForm({...form,extraHours:e.target.value})}/></Field>}{form.caseAction==='request'&&<><Field label="Request evidence from"><select value={form.party||'BUYER'} onChange={e=>setForm({...form,party:e.target.value})}><option>BUYER</option><option>SUPPLIER</option></select></Field><Field label="Question"><textarea required value={form.question||''} onChange={e=>setForm({...form,question:e.target.value})}/></Field><Field label="Due date"><input type="datetime-local" required value={form.dueAt||''} onChange={e=>setForm({...form,dueAt:e.target.value})}/></Field></>}{form.caseAction==='dispute'&&<Field label="Reason code"><select value={form.reasonCode||'OTHER'} onChange={e=>setForm({...form,reasonCode:e.target.value})}>{REASONS.map(r=><option>{r}</option>)}</select></Field>}{['confirm','decision','dispute','extend','hold','resume'].includes(form.caseAction)&&<Field label="Reason / decision note"><textarea required minLength="50" value={form.reason||''} onChange={e=>setForm({...form,reason:e.target.value})} placeholder="Provide a reason of at least 50 characters."/></Field>}{form.case?.status!=='SUBMITTED_FOR_REVIEW'&&form.case?.window_status==='OPEN'&&form.caseAction==='decision'&&<div className="alert error"><Clock size={16}/> The evidence window is still open. Record a decision only after it closes or both parties waive it.</div>}<div className="notice"><Shield size={16}/> The backend remains authoritative. This action records a moderation request; it does not directly move funds.</div><Button type="submit" disabled={busy||form.detailLoading||!form.detail||(form.caseAction==='decision'&&form.outcome==='REDISPATCH_OR_REPLACEMENT'&&!form.newDispatchDeadlineAt)||(form.case?.status!=='SUBMITTED_FOR_REVIEW'&&form.case?.window_status==='OPEN'&&form.caseAction==='decision')||(form.case?.status==='SUBMITTED_FOR_REVIEW'&&form.caseAction==='confirm'&&form.case?.supplier_photos==='PENDING')||(form.case?.status==='SUBMITTED_FOR_REVIEW'&&form.caseAction==='confirm'&&form.case?.supplier_photos==='OVERDUE'&&(!form.acknowledgeMissingSupplierPhotos||!form.acknowledgementReason?.trim()))||(form.case?.buyer_photos!=='SUBMITTED'&&form.case?.buyer_photos!=='SUBMITTED_LATE'&&form.caseAction==='confirm')||(form.case?.status==='SUBMITTED_FOR_REVIEW'&&form.caseAction==='confirm'&&form.case?.window_status==='OPEN')||(form.case?.status==='SUBMITTED_FOR_REVIEW'&&form.caseAction==='confirm'&&!(form.evidenceIdsConsidered||[]).length)||(form.caseAction==='decision'&&!(form.evidenceIdsConsidered||[]).length)}>Submit moderation action</Button></form>}
- {name==='dispute'&&<form className="modal-body" onSubmit={async e=>{e.preventDefault();await onDispute(form)}}><Field label="Reason"><select value={form.reasonCode||'SPEC_DISAGREEMENT'} onChange={e=>setForm({...form,reasonCode:e.target.value})}>{REASONS.map(r=><option>{r}</option>)}</select></Field><Field label="Affected quantity"><input type="number" min="1" value={form.quantity||1} onChange={e=>setForm({...form,quantity:e.target.value})}/></Field><Field label="Your statement"><textarea required minLength="20" value={form.reason||''} onChange={e=>setForm({...form,reason:e.target.value})} placeholder="Describe the issue and reference the agreed terms."/></Field><Button type="submit" disabled={busy}>Open dispute</Button></form>}
- {name==='account'&&<div className="modal-body"><div className="account-row"><div className="avatar large">{role.slice(0,2)}</div><div><b>{role==='BUYER'?'Chinedu Okafor':role==='SUPPLIER'?'Ibrahim Traders':'SupplyKey Moderator'}</b><p>{role.toLowerCase()}@supplykey.demo</p></div></div>{api.mode==='mock'?<Field label="Switch demo workspace"><select value={role} onChange={e=>onRole(e.target.value)}><option value="BUYER">Buyer</option><option value="SUPPLIER">Supplier</option><option value="MODERATOR">Moderator</option><option value="SENIOR_MODERATOR">Senior moderator</option></select>{api.mode==='live'&&['MODERATOR','SENIOR_MODERATOR'].includes(role)&&<small className="muted">Staff role is controlled by backend permissions.</small>}</Field>:['BUYER','SUPPLIER'].includes(role)&&<Field label="Workspace view"><select value={role} onChange={e=>onWorkspace(e.target.value)}><option value="BUYER">Buyer transactions</option><option value="SUPPLIER">Supplier transactions</option></select></Field>}<Button variant="secondary" onClick={onLogout}>Sign out</Button></div>}
- {name==='help'&&<div className="modal-body help-content"><p>SupplyKey coordinates agreements, payment status, evidence and dispute review. It does not provide logistics services.</p><h4>Key things to know</h4><ul><li>Only the backend can confirm funds are secured.</li><li>Photographs are evidence, not proof of physical receipt.</li><li>Acceptance is submitted for moderator review.</li><li>Deadline expiry does not automatically pay or refund.</li><li>Real-money mode is blocked pending provider and legal approval.</li></ul></div>}
- {name==='notifications'&&<div className="modal-body">{notifications?.length?notifications.map(n=><div className="notification-row"><div><b>{n.title||n.type||'SupplyKey notification'}</b><p>{n.body||n.message}</p><small>{n.created_at?dateTime(n.created_at):''}</small></div>{!n.read_at&&<Button variant="secondary" onClick={async()=>{await api.markNotificationRead(n.id);setNotifications(notifications.map(x=>x.id===n.id?{...x,read_at:new Date().toISOString()}:x))}}>Mark read</Button>}</div>):<Empty title="You're all caught up" text="New transaction notices and deadline reminders will appear here when supplied by the backend."/>}</div>}
- {name==='mfa'&&<form className="modal-body" onSubmit={e=>{e.preventDefault();onMfa(form.mfaCode)}}><p>Enter the authenticator code from your staff account.</p><Field label="6-digit code"><input maxLength="6" required value={form.mfaCode||''} onChange={e=>setForm({...form,mfaCode:e.target.value})}/></Field><Button type="submit">Verify</Button></form>}
- </div></div>}
+function ContestReturnAction({ tx, busy, onAction, refresh }) {
+  const [reason, setReason] = useState("NOT_RECEIVED"),
+    [note, setNote] = useState(""),
+    [ids, setIds] = useState([]);
+  return (
+    <div className="action-form">
+      <b>Contest return</b>
+      <Field label="Reason">
+        <select value={reason} onChange={(e) => setReason(e.target.value)}>
+          <option>WRONG_ITEM</option>
+          <option>DAMAGED</option>
+          <option>QUANTITY_MISMATCH</option>
+          <option>NOT_RECEIVED</option>
+        </select>
+      </Field>
+      <Field label="Details">
+        <textarea
+          value={note}
+          onChange={(e) => setNote(e.target.value)}
+          placeholder="Explain the return discrepancy."
+        />
+      </Field>
+      <EvidenceInline purpose="DISPUTE" txId={tx.id} onUploaded={setIds} />
+      <Button
+        disabled={busy || !tx.return_id || !note.trim() || !ids.length}
+        onClick={async () => {
+          await onAction(`/returns/${tx.return_id}/contest`, {
+            lines: [
+              {
+                item_id:
+                  tx.lots?.find(
+                    (l) => l.item_status === "RETURN_HANDOVER_RECORDED",
+                  )?.item_id || tx.items[0].id,
+                quantity:
+                  tx.lots
+                    ?.filter(
+                      (l) => l.item_status === "RETURN_HANDOVER_RECORDED",
+                    )
+                    .reduce((s, l) => s + l.quantity, 0) ||
+                  tx.items[0].quantity,
+                reason_code: reason,
+              },
+            ],
+            note,
+            evidence_ids: ids,
+          });
+          await refresh();
+        }}
+      >
+        Submit contest
+      </Button>
+    </div>
+  );
+}
+function CameraIcon() {
+  return <Upload size={18} />;
+}
+function Modal({
+  name,
+  onClose,
+  form,
+  setForm,
+  role,
+  busy,
+  onSubmit,
+  onRole,
+  onLogout,
+  onMfa,
+  onWorkspace,
+  onAction,
+  onDispute,
+  notifications,
+  setNotifications,
+}) {
+  return (
+    <div
+      className="modal-backdrop"
+      onMouseDown={(e) => e.target === e.currentTarget && onClose()}
+    >
+      <div className="modal">
+        <div className="modal-head">
+          <h3>
+            {name === "case"
+              ? "Review case"
+              : name === "dispute"
+                ? "Raise a dispute"
+                : name === "account"
+                  ? "Account & workspace"
+                  : name === "help"
+                    ? "SupplyKey help"
+                    : name === "notifications"
+                      ? "Notifications"
+                      : name === "mfa"
+                        ? "Verify your identity"
+                        : name === "deliveryEvidence"
+                          ? "Upload delivery photographs"
+                          : name === "returnReceipt"
+                            ? "Confirm returned goods"
+                            : "Details"}
+          </h3>
+          <button className="icon-btn" onClick={onClose}>
+            <X />
+          </button>
+        </div>
+        {name === "case" && (
+          <form onSubmit={onSubmit} className="modal-body">
+            <div className="case-summary">
+              <span className="eyebrow">{form.case?.reference}</span>
+              <h2>{form.case?.item}</h2>
+              <Badge>{form.case?.status}</Badge>
+              <p>{form.case?.reason}</p>
+              <div className="summary-line">
+                <span>Buyer</span>
+                <b>{form.case?.buyer}</b>
+              </div>
+              <div className="summary-line">
+                <span>Supplier</span>
+                <b>{form.case?.supplier}</b>
+              </div>
+              <div className="summary-line">
+                <span>Amount</span>
+                <b>{money(form.case?.amount_kobo)}</b>
+              </div>
+              <div className="summary-line">
+                <span>Buyer delivery photos</span>
+                <Badge>{form.case?.buyer_photos}</Badge>
+              </div>
+              <div className="summary-line">
+                <span>Supplier delivery photos</span>
+                <Badge>{form.case?.supplier_photos}</Badge>
+              </div>
+            </div>
+            {form.settlement && (
+              <SettlementVisibility
+                settlement={form.settlement.settlement}
+                role={role}
+              />
+            )}
+            {form.detailLoading && (
+              <div className="notice">
+                <Clock size={16} /> Loading the complete case file…
+              </div>
+            )}
+            {form.detailError && (
+              <div className="alert error" role="alert">
+                {form.detailError}
+              </div>
+            )}
+            {form.submitError && (
+              <div className="alert error" role="alert">
+                {form.submitError}
+              </div>
+            )}
+            {form.detail && (
+              <div className="case-detail">
+                {form.detail.transaction && (
+                  <>
+                    <b>Transaction and agreed items</b>
+                    <p className="muted">
+                      {form.detail.transaction.reference} · Buyer:{" "}
+                      {form.detail.transaction.buyer} · Supplier:{" "}
+                      {form.detail.transaction.supplier}
+                    </p>
+                    {form.detail.transaction.items?.map((i) => (
+                      <div className="case-evidence">
+                        <div>
+                          <b>{i.description}</b>
+                          <small>
+                            {i.specification} · {i.condition} · Quantity{" "}
+                            {i.quantity}
+                          </small>
+                          {i.conditions?.map((c) => (
+                            <small>
+                              {c.kind}: {c.text}
+                            </small>
+                          ))}
+                        </div>
+                      </div>
+                    ))}
+                    {form.detail.transaction.returns?.length > 0 && (
+                      <>
+                        <b>Physical return verification</b>
+                        {form.detail.transaction.returns.map((r) => (
+                          <div className="case-note">
+                            <b>
+                              Return {r.id} · {r.status}
+                            </b>
+                            <small>
+                              Buyer handover:{" "}
+                              {r.handover_committed_at
+                                ? dateTime(r.handover_committed_at)
+                                : "Not submitted"}{" "}
+                              · Supplier receipt:{" "}
+                              {r.supplier_receipt_confirmed_at
+                                ? dateTime(r.supplier_receipt_confirmed_at)
+                                : "Not confirmed"}
+                            </small>
+                            <small>
+                              Refund eligibility:{" "}
+                              {r.refund_eligibility_status ||
+                                "Awaiting return receipt"}
+                            </small>
+                            {r.refund_authorization_rejected && (
+                              <small>
+                                Moderator authorization declined:{" "}
+                                {r.refund_authorization_rejection_reason}
+                              </small>
+                            )}
+                          </div>
+                        ))}
+                      </>
+                    )}
+                  </>
+                )}
+                <b>Evidence submitted</b>
+                {form.detail.evidence?.length ? (
+                  form.detail.evidence.map((ev) => (
+                    <div className="case-evidence">
+                      <div>
+                        <b>{ev.name || ev.id}</b>
+                        <small>
+                          {ev.purpose} · {ev.status} ·{" "}
+                          {ev.mime_type || "File metadata unavailable"} ·{" "}
+                          {ev.size_bytes
+                            ? Math.round(ev.size_bytes / 1024) + " KB"
+                            : ""}
+                        </small>
+                        {ev.flags?.length > 0 && (
+                          <Badge>Flagged: {ev.flags.join(", ")}</Badge>
+                        )}
+                        <label className="terms-check evidence-considered">
+                          <input
+                            type="checkbox"
+                            disabled={ev.status !== "VERIFIED"}
+                            checked={(
+                              form.evidenceIdsConsidered || []
+                            ).includes(ev.id)}
+                            onChange={(e) =>
+                              setForm({
+                                ...form,
+                                evidenceIdsConsidered: e.target.checked
+                                  ? [
+                                      ...(form.evidenceIdsConsidered || []),
+                                      ev.id,
+                                    ]
+                                  : (form.evidenceIdsConsidered || []).filter(
+                                      (id) => id !== ev.id,
+                                    ),
+                              })
+                            }
+                          />{" "}
+                          Include in evidence considered
+                        </label>
+                        <EvidencePreview evidence={ev} />
+                      </div>
+                      <Button
+                        variant="secondary"
+                        onClick={async () => {
+                          try {
+                            await onAction(`/mod/evidence/${ev.id}/flag`, {
+                              reason:
+                                form.flagReason ||
+                                "Flagged for moderator review.",
+                            });
+                            setForm((current) => ({
+                              ...current,
+                              flaggedEvidence: ev.id,
+                              submitError: "",
+                            }));
+                          } catch (err) {
+                            setForm((current) => ({
+                              ...current,
+                              submitError:
+                                err?.data?.error?.message ||
+                                err.message ||
+                                "Evidence flagging failed.",
+                            }));
+                          }
+                        }}
+                      >
+                        Flag evidence
+                      </Button>
+                    </div>
+                  ))
+                ) : (
+                  <p className="muted">
+                    No evidence metadata was returned in this case file.
+                  </p>
+                )}
+                <b>Case timeline</b>
+                {form.detail.timeline?.length ? (
+                  <ActivityFeed items={form.detail.timeline} />
+                ) : (
+                  <p className="muted">No case events returned.</p>
+                )}
+                {form.detail.dispute?.decision_deadline_at && (
+                  <div
+                    className={
+                      form.detail.dispute.decision_overdue
+                        ? "alert error"
+                        : "notice"
+                    }
+                  >
+                    72-hour decision deadline:{" "}
+                    {dateTime(form.detail.dispute.decision_deadline_at)}
+                    {form.detail.dispute.decision_overdue
+                      ? " · OVERDUE — escalated, no automatic financial action."
+                      : ""}
+                  </div>
+                )}
+                {form.detail.evidence_requests?.length > 0 && (
+                  <>
+                    <b>Evidence requests</b>
+                    {form.detail.evidence_requests.map((r) => (
+                      <p className="case-note">
+                        {r.party}: {r.question}
+                        <small>
+                          {r.status} · Due {dateTime(r.due_at)}
+                        </small>
+                      </p>
+                    ))}
+                  </>
+                )}
+                {form.detail.notes?.length > 0 && (
+                  <>
+                    <b>Internal notes</b>
+                    {form.detail.notes.map((n) => (
+                      <p className="case-note">
+                        {n.text}
+                        <small>
+                          {n.actor} · {dateTime(n.at)}
+                        </small>
+                      </p>
+                    ))}
+                  </>
+                )}
+              </div>
+            )}
+            <Field label="Moderator action">
+              <select
+                value={
+                  form.caseAction ||
+                  (form.case?.status === "SUBMITTED_FOR_REVIEW"
+                    ? "confirm"
+                    : "decision")
+                }
+                onChange={(e) =>
+                  setForm({
+                    ...form,
+                    caseAction: e.target.value,
+                    submitError: "",
+                  })
+                }
+              >
+                {form.case?.status === "SUBMITTED_FOR_REVIEW" ? (
+                  <>
+                    <option value="confirm">Confirm acceptance</option>
+                    <option value="request">Request additional evidence</option>
+                    <option value="dispute">Open dispute</option>
+                    <option value="extend">Extend evidence window</option>
+                  </>
+                ) : (
+                  <>
+                    <option value="decision">Record dispute decision</option>
+                    {form.detail?.transaction?.returns?.some(
+                      (r) =>
+                        r.status === "RECEIPT_CONFIRMED" &&
+                        [
+                          "PENDING_APPROVAL",
+                          "AWAITING_VERIFIED_BENEFICIARY",
+                        ].includes(r.refund_eligibility_status),
+                    ) && (
+                      <option value="authorize_refund">
+                        Authorize refund after beneficiary verification
+                      </option>
+                    )}
+                    {form.settlement?.settlement?.refunds?.some(
+                      (r) =>
+                        r.status === "FAILED" &&
+                        r.refund_classification === "DISPUTE_RETURN",
+                    ) && (
+                      <option value="retry_refund">
+                        Retry failed dispute refund
+                      </option>
+                    )}
+                    <option value="request">Request additional evidence</option>
+                    <option value="extend">Extend evidence window</option>
+                    <option value="note">Add internal note</option>
+                    <option value="assign">Assign case</option>
+                    <option value="hold">Place on hold</option>
+                    <option value="resume">Resume review</option>
+                  </>
+                )}
+              </select>
+            </Field>
+            {form.case?.status === "SUBMITTED_FOR_REVIEW" &&
+              form.caseAction === "confirm" &&
+              form.case?.supplier_photos === "OVERDUE" && (
+                <>
+                  <div className="notice">
+                    <AlertTriangle size={16} /> Supplier delivery photographs
+                    are overdue. Confirmation requires an audited
+                    acknowledgement.
+                  </div>
+                  <label className="terms-check">
+                    <input
+                      type="checkbox"
+                      checked={!!form.acknowledgeMissingSupplierPhotos}
+                      onChange={(e) =>
+                        setForm({
+                          ...form,
+                          acknowledgeMissingSupplierPhotos: e.target.checked,
+                        })
+                      }
+                    />{" "}
+                    Acknowledge missing supplier delivery photographs
+                  </label>
+                  <Field label="Acknowledgement reason">
+                    <textarea
+                      required
+                      value={form.acknowledgementReason || ""}
+                      onChange={(e) =>
+                        setForm({
+                          ...form,
+                          acknowledgementReason: e.target.value,
+                        })
+                      }
+                    />
+                  </Field>
+                </>
+              )}
+            {form.case?.status === "SUBMITTED_FOR_REVIEW" &&
+              form.caseAction === "confirm" &&
+              form.case?.supplier_photos === "PENDING" && (
+                <div className="alert error">
+                  <Clock size={16} /> Confirmation is blocked until supplier
+                  delivery photographs are submitted.
+                </div>
+              )}
+            {form.case?.status === "SUBMITTED_FOR_REVIEW" &&
+              form.caseAction === "confirm" &&
+              form.case?.window_status === "OPEN" && (
+                <div className="alert error">
+                  <Clock size={16} /> Confirmation is blocked until the evidence
+                  window closes or both parties waive it.
+                </div>
+              )}
+            {form.case?.status !== "SUBMITTED_FOR_REVIEW" &&
+              form.caseAction === "decision" && (
+                <>
+                  <Field label="Decision outcome">
+                    <select
+                      value={form.outcome || "NO_FINANCIAL_ACTION"}
+                      onChange={(e) =>
+                        setForm({ ...form, outcome: e.target.value })
+                      }
+                    >
+                      <option value="RELEASE">
+                        Release allocated quantity
+                      </option>
+                      <option value="REFUND">
+                        Refund allocated quantity (no return required)
+                      </option>
+                      <option value="RETURN_AND_REFUND">
+                        Require return, then refund after supplier receipt
+                      </option>
+                      <option value="NO_FINANCIAL_ACTION">
+                        No financial action
+                      </option>
+                      {(
+                        form.detail?.consent_statement_ids ||
+                        form.detail?.dispute?.consent_statement_ids ||
+                        form.case?.consent_statement_ids ||
+                        []
+                      ).length >= 2 && (
+                        <option value="REDISPATCH_OR_REPLACEMENT">
+                          Redispatch / replacement (both consents recorded)
+                        </option>
+                      )}
+                    </select>
+                  </Field>
+                  <Field label="Affected quantity (all frozen lots)">
+                    <input
+                      type="number"
+                      value={
+                        form.case?.affected_lots?.reduce(
+                          (n, l) => n + l.quantity,
+                          0,
+                        ) ||
+                        form.case?.quantity ||
+                        1
+                      }
+                      readOnly
+                    />
+                  </Field>
+                  {form.outcome === "RETURN_AND_REFUND" && (
+                    <div className="notice">
+                      Refund eligibility remains blocked until the buyer submits
+                      return handover evidence and the supplier confirms
+                      receipt. One authorized moderator must authorize the
+                      refund after receipt is confirmed.
+                    </div>
+                  )}
+                  {form.outcome === "REDISPATCH_OR_REPLACEMENT" && (
+                    <Field label="New dispatch deadline">
+                      <input
+                        type="datetime-local"
+                        required
+                        value={form.newDispatchDeadlineAt || ""}
+                        onChange={(e) =>
+                          setForm({
+                            ...form,
+                            newDispatchDeadlineAt: e.target.value,
+                          })
+                        }
+                      />
+                    </Field>
+                  )}
+                </>
+              )}
+            {form.caseAction === "authorize_refund" && (
+              <div className="notice">
+                Supplier receipt has been persisted. Verify that the buyer's
+                Paga beneficiary is active, then authorize the immutable refund
+                instruction. This action authorizes the refund; provider
+                confirmation is still required before completion.
+              </div>
+            )}
+            {form.caseAction === "retry_refund" && (
+              <>
+                <Field label="Failed dispute refund">
+                  <select
+                    value={form.refundInstructionId || ""}
+                    onChange={(e) =>
+                      setForm({ ...form, refundInstructionId: e.target.value })
+                    }
+                  >
+                    <option value="">Select failed refund</option>
+                    {(form.settlement?.settlement?.refunds || [])
+                      .filter(
+                        (r) =>
+                          r.status === "FAILED" &&
+                          r.refund_classification === "DISPUTE_RETURN",
+                      )
+                      .map((r) => (
+                        <option value={r.id}>
+                          {r.id} · {money(r.amount_kobo)}
+                        </option>
+                      ))}
+                  </select>
+                </Field>
+                <div className="notice">
+                  Only a definitive provider failure can be retried. Unknown
+                  outcomes must be reconciled first.
+                </div>
+              </>
+            )}
+            {form.caseAction === "note" && (
+              <Field label="Internal note">
+                <textarea
+                  required
+                  minLength="10"
+                  value={form.internalNote || ""}
+                  onChange={(e) =>
+                    setForm({ ...form, internalNote: e.target.value })
+                  }
+                />
+              </Field>
+            )}
+            {form.caseAction === "retry_refund" && (
+              <Field label="Retry reason">
+                <textarea
+                  required
+                  minLength="10"
+                  value={form.reason || ""}
+                  onChange={(e) => setForm({ ...form, reason: e.target.value })}
+                />
+              </Field>
+            )}
+            {form.caseAction === "assign" && (
+              <Field label="Moderator ID (optional; blank assigns to you)">
+                <input
+                  value={form.assignee || ""}
+                  onChange={(e) =>
+                    setForm({ ...form, assignee: e.target.value })
+                  }
+                />
+              </Field>
+            )}
+            {form.caseAction === "extend" && (
+              <Field label="Additional hours">
+                <input
+                  type="number"
+                  min="1"
+                  max="120"
+                  value={form.extraHours || 24}
+                  onChange={(e) =>
+                    setForm({ ...form, extraHours: e.target.value })
+                  }
+                />
+              </Field>
+            )}
+            {form.caseAction === "request" && (
+              <>
+                <Field label="Request evidence from">
+                  <select
+                    value={form.party || "BUYER"}
+                    onChange={(e) =>
+                      setForm({ ...form, party: e.target.value })
+                    }
+                  >
+                    <option>BUYER</option>
+                    <option>SUPPLIER</option>
+                  </select>
+                </Field>
+                <Field label="Question">
+                  <textarea
+                    required
+                    value={form.question || ""}
+                    onChange={(e) =>
+                      setForm({ ...form, question: e.target.value })
+                    }
+                  />
+                </Field>
+                <Field label="Due date">
+                  <input
+                    type="datetime-local"
+                    required
+                    value={form.dueAt || ""}
+                    onChange={(e) =>
+                      setForm({ ...form, dueAt: e.target.value })
+                    }
+                  />
+                </Field>
+              </>
+            )}
+            {form.caseAction === "dispute" && (
+              <Field label="Reason code">
+                <select
+                  value={form.reasonCode || "OTHER"}
+                  onChange={(e) =>
+                    setForm({ ...form, reasonCode: e.target.value })
+                  }
+                >
+                  {REASONS.map((r) => (
+                    <option>{r}</option>
+                  ))}
+                </select>
+              </Field>
+            )}
+            {[
+              "confirm",
+              "decision",
+              "dispute",
+              "extend",
+              "hold",
+              "resume",
+            ].includes(form.caseAction) && (
+              <Field label="Reason / decision note">
+                <textarea
+                  required
+                  minLength="50"
+                  value={form.reason || ""}
+                  onChange={(e) => setForm({ ...form, reason: e.target.value })}
+                  placeholder="Provide a reason of at least 50 characters."
+                />
+              </Field>
+            )}
+            {form.case?.status !== "SUBMITTED_FOR_REVIEW" &&
+              form.case?.window_status === "OPEN" &&
+              form.caseAction === "decision" && (
+                <div className="alert error">
+                  <Clock size={16} /> The evidence window is still open. Record
+                  a decision only after it closes or both parties waive it.
+                </div>
+              )}
+            <div className="notice">
+              <Shield size={16} /> The backend remains authoritative. This
+              action records a moderation request; it does not directly move
+              funds.
+            </div>
+            <Button
+              type="submit"
+              disabled={
+                busy ||
+                form.detailLoading ||
+                !form.detail ||
+                (form.caseAction === "decision" &&
+                  form.outcome === "REDISPATCH_OR_REPLACEMENT" &&
+                  !form.newDispatchDeadlineAt) ||
+                (form.case?.status !== "SUBMITTED_FOR_REVIEW" &&
+                  form.case?.window_status === "OPEN" &&
+                  form.caseAction === "decision") ||
+                (form.case?.status === "SUBMITTED_FOR_REVIEW" &&
+                  form.caseAction === "confirm" &&
+                  form.case?.supplier_photos === "PENDING") ||
+                (form.case?.status === "SUBMITTED_FOR_REVIEW" &&
+                  form.caseAction === "confirm" &&
+                  form.case?.supplier_photos === "OVERDUE" &&
+                  (!form.acknowledgeMissingSupplierPhotos ||
+                    !form.acknowledgementReason?.trim())) ||
+                (form.case?.buyer_photos !== "SUBMITTED" &&
+                  form.case?.buyer_photos !== "SUBMITTED_LATE" &&
+                  form.caseAction === "confirm") ||
+                (form.case?.status === "SUBMITTED_FOR_REVIEW" &&
+                  form.caseAction === "confirm" &&
+                  form.case?.window_status === "OPEN") ||
+                (form.case?.status === "SUBMITTED_FOR_REVIEW" &&
+                  form.caseAction === "confirm" &&
+                  !(form.evidenceIdsConsidered || []).length) ||
+                (form.caseAction === "decision" &&
+                  !(form.evidenceIdsConsidered || []).length)
+              }
+            >
+              Submit moderation action
+            </Button>
+          </form>
+        )}
+        {name === "dispute" && (
+          <form
+            className="modal-body"
+            onSubmit={async (e) => {
+              e.preventDefault();
+              await onDispute(form);
+            }}
+          >
+            <Field label="Reason">
+              <select
+                value={form.reasonCode || "SPEC_DISAGREEMENT"}
+                onChange={(e) =>
+                  setForm({ ...form, reasonCode: e.target.value })
+                }
+              >
+                {REASONS.map((r) => (
+                  <option>{r}</option>
+                ))}
+              </select>
+            </Field>
+            <Field label="Affected quantity">
+              <input
+                type="number"
+                min="1"
+                value={form.quantity || 1}
+                onChange={(e) => setForm({ ...form, quantity: e.target.value })}
+              />
+            </Field>
+            <Field label="Your statement">
+              <textarea
+                required
+                minLength="20"
+                value={form.reason || ""}
+                onChange={(e) => setForm({ ...form, reason: e.target.value })}
+                placeholder="Describe the issue and reference the agreed terms."
+              />
+            </Field>
+            <Button type="submit" disabled={busy}>
+              Open dispute
+            </Button>
+          </form>
+        )}
+        {name === "account" && (
+          <div className="modal-body">
+            <div className="account-row">
+              <div className="avatar large">{role.slice(0, 2)}</div>
+              <div>
+                <b>
+                  {role === "BUYER"
+                    ? "Chinedu Okafor"
+                    : role === "SUPPLIER"
+                      ? "Ibrahim Traders"
+                      : "SupplyKey Moderator"}
+                </b>
+                <p>{role.toLowerCase()}@supplykey.demo</p>
+              </div>
+            </div>
+            {api.mode === "mock" ? (
+              <Field label="Switch demo workspace">
+                <select value={role} onChange={(e) => onRole(e.target.value)}>
+                  <option value="BUYER">Buyer</option>
+                  <option value="SUPPLIER">Supplier</option>
+                  <option value="MODERATOR">Moderator</option>
+                  <option value="SENIOR_MODERATOR">Senior moderator</option>
+                </select>
+                {api.mode === "live" &&
+                  ["MODERATOR", "SENIOR_MODERATOR"].includes(role) && (
+                    <small className="muted">
+                      Staff role is controlled by backend permissions.
+                    </small>
+                  )}
+              </Field>
+            ) : (
+              ["BUYER", "SUPPLIER"].includes(role) && (
+                <Field label="Workspace view">
+                  <select
+                    value={role}
+                    onChange={(e) => onWorkspace(e.target.value)}
+                  >
+                    <option value="BUYER">Buyer transactions</option>
+                    <option value="SUPPLIER">Supplier transactions</option>
+                  </select>
+                </Field>
+              )
+            )}
+            <Button variant="secondary" onClick={onLogout}>
+              Sign out
+            </Button>
+          </div>
+        )}
+        {name === "help" && (
+          <div className="modal-body help-content">
+            <p>
+              SupplyKey coordinates agreements, payment status, evidence and
+              dispute review. It does not provide logistics services.
+            </p>
+            <h4>Key things to know</h4>
+            <ul>
+              <li>Only the backend can confirm funds are secured.</li>
+              <li>Photographs are evidence, not proof of physical receipt.</li>
+              <li>Acceptance is submitted for moderator review.</li>
+              <li>Deadline expiry does not automatically pay or refund.</li>
+              <li>
+                Real-money mode is blocked pending provider and legal approval.
+              </li>
+            </ul>
+          </div>
+        )}
+        {name === "notifications" && (
+          <div className="modal-body">
+            {notifications?.length ? (
+              notifications.map((n) => (
+                <div className="notification-row">
+                  <div>
+                    <b>{n.title || n.type || "SupplyKey notification"}</b>
+                    <p>{n.body || n.message}</p>
+                    <small>{n.created_at ? dateTime(n.created_at) : ""}</small>
+                  </div>
+                  {!n.read_at && (
+                    <Button
+                      variant="secondary"
+                      onClick={async () => {
+                        await api.markNotificationRead(n.id);
+                        setNotifications(
+                          notifications.map((x) =>
+                            x.id === n.id
+                              ? { ...x, read_at: new Date().toISOString() }
+                              : x,
+                          ),
+                        );
+                      }}
+                    >
+                      Mark read
+                    </Button>
+                  )}
+                </div>
+              ))
+            ) : (
+              <Empty
+                title="You're all caught up"
+                text="New transaction notices and deadline reminders will appear here when supplied by the backend."
+              />
+            )}
+          </div>
+        )}
+        {name === "mfa" && (
+          <form
+            className="modal-body"
+            onSubmit={(e) => {
+              e.preventDefault();
+              onMfa(form.mfaCode);
+            }}
+          >
+            <p>Enter the authenticator code from your staff account.</p>
+            <Field label="6-digit code">
+              <input
+                maxLength="6"
+                required
+                value={form.mfaCode || ""}
+                onChange={(e) => setForm({ ...form, mfaCode: e.target.value })}
+              />
+            </Field>
+            <Button type="submit">Verify</Button>
+          </form>
+        )}
+      </div>
+    </div>
+  );
+}
 export default App;
