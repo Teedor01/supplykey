@@ -1034,6 +1034,8 @@ def register(body: dict, s: Session = Depends(db)):
     )
 
     s.add(u)
+    s.flush()
+    
     s.add(verification)
     s.commit()
 
