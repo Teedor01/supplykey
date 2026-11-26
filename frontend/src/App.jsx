@@ -1090,6 +1090,23 @@ function App() {
                 <Button type="submit" disabled={busy}>
                   Create account <ArrowRight size={16} />
                 </Button>
+
+                <button
+                  type="button"
+                  className="auth-switch"
+                  onClick={() => {
+                    setForm((current) => ({
+                      ...current,
+                      verificationContact: current.email,
+                      otp: "",
+                    }));
+                    setAuthMode("verify");
+                    setError("");
+                  }}
+                >
+                  Already registered? Resend verification code
+                </button>
+
                 <button
                   type="button"
                   className="auth-switch"
